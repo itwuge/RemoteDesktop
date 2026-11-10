@@ -31,7 +31,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RDC_BUILD_ROOT: ${{ runner.temp }}/rdc-build
   TAG: ${{ inputs.tag || github.ref_name }}
   REPO: ${{ github.repository }}
 
@@ -41,6 +40,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
+      RDC_BUILD_ROOT: ${{ runner.temp }}/rdc-build
     strategy:
       fail-fast: false
       matrix:
