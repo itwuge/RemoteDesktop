@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from publish_release import _emit, _sha256, classify, darwin_section
+from publish_release import _default_signing_key, _emit, _sha256, classify, darwin_section, sign_manifest
 
 DEFAULT_REPO = "itwuge/RemoteDesktop"
 DEFAULT_OUT = "update-manifest.json"
@@ -143,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="", help="完整清单输出路径, 默认 update-manifest.json")
     parser.add_argument("--fragment-out", default=FRAGMENT_OUT)
     parser.add_argument("--version", default="")
+    parser.add_argument("--signing-key", default="", help="Ed25519 私钥 PEM 路径, 默认取 RDC_UPDATE_SIGNING_KEY")
     args = parser.parse_args(argv)
 
     version = args.version or _version_from_src()
@@ -186,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
         platform_map[platform] = {"status": "available", "kinds": kinds}
     existing["platforms"] = platform_map
     existing["darwin"] = darwin_section(merged)
+    try:
+        existing = sign_manifest(existing, args.signing_key.strip() or _default_signing_key())
+    except ValueError as error:
+        _emit(f"清单签名失败, 不输出: {error}")
+        return 1
     out_path = Path(args.out or DEFAULT_OUT)
     out_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     _emit(f"合并完成: {out_path.resolve()} 共 {len(merged)} 个资产")

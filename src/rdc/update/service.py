@@ -31,13 +31,16 @@ from rdc.core.errors import (
     UPDATE_DOWNGRADE_REJECTED,
     UPDATE_HASH_MISMATCH,
     UPDATE_MANIFEST_INVALID,
+    UPDATE_SIGNATURE_INVALID,
+    UPDATE_SOURCE_INSECURE,
     UPDATE_SOURCE_UNREACHABLE,
 )
 from rdc.core.logging import log_event
 from rdc.core.result import CommandResult
 from rdc.core.runtime import is_portable
 from rdc.update.manifest import UpdateManifest, parse_manifest
-from rdc.update.source import UpdateSource, default_source_value, parse_source
+from rdc.update.signing import BUILTIN_TRUST, ManifestSignatureError, TrustAnchor
+from rdc.update.source import UpdateSource, default_source_value, is_insecure_http_url, parse_source
 from rdc.update.versioning import compare_versions, parse_version
 from rdc.version import __version__, artifact_basename, platform_tag
 
@@ -91,6 +94,7 @@ class UpdateService:
     work_dir: Path = field(default_factory=lambda: default_build_root() / UPDATES_DIR)
     timeout: float = DEFAULT_TIMEOUT_SECONDS
     preferred_kind: str | None = None
+    trust_anchor: TrustAnchor = field(default=BUILTIN_TRUST, repr=False)
     _resolved_source: UpdateSource = field(init=False, repr=False)
     _asset_kind: str = field(init=False, default="", repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -119,8 +123,15 @@ class UpdateService:
 
     # ---------------------------------------------------------------- 检查更新
     def refresh_update_status(self) -> CommandResult:
-        """读取更新源并比较版本; 降级清单一律拒绝."""
+        """读取更新源并比较版本; 不安全源与验签失败一律拒绝."""
         started = time.perf_counter()
+        if is_insecure_http_url(self.manifest_url):
+            self._log_check(started, None, UPDATE_SOURCE_INSECURE)
+            return CommandResult(
+                ok=False,
+                message=f"更新源不安全: {self.source_label} 使用 http, 只允许 https 或本地目录",
+                error_code=UPDATE_SOURCE_INSECURE,
+            )
         try:
             payload = self._read_manifest_payload()
             manifest = parse_manifest(
@@ -128,6 +139,7 @@ class UpdateService:
                 source=self.manifest_url,
                 platform=platform_tag(),
                 preferred_kind=self._asset_kind,
+                trust=self.trust_anchor,
             )
         except OSError as error:
             self._log_check(started, None, UPDATE_SOURCE_UNREACHABLE)
@@ -135,6 +147,13 @@ class UpdateService:
                 ok=False,
                 message=f"更新源不可达: {error}",
                 error_code=UPDATE_SOURCE_UNREACHABLE,
+            )
+        except ManifestSignatureError as error:
+            self._log_check(started, None, UPDATE_SIGNATURE_INVALID)
+            return CommandResult(
+                ok=False,
+                message=f"更新清单签名无效, 已拒绝更新: {error}",
+                error_code=UPDATE_SIGNATURE_INVALID,
             )
         except ValueError as error:
             self._log_check(started, None, UPDATE_MANIFEST_INVALID)

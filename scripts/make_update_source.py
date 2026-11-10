@@ -3,8 +3,8 @@
 # 所属目录    : scripts/
 # 文件用途    : 生成本地离线更新源清单(单产物, v2 结构)
 # 架构定位    : 本地开发与联调工具; 不进入运行时
-# 核心功能    : 从真实产物读取 sha256; 写版本、资产地址、日期、说明、强制标记与最低版本
-# 职责边界    : 不上传; 不签名; 不修改产物; 不访问外部服务
+# 核心功能    : 从真实产物读取 sha256; 写版本、资产地址、日期、说明、强制标记与最低版本; 用发布私钥签名
+# 职责边界    : 不上传; 不改产物; 不访问外部服务
 # ==========================================================================================
 
 """本地离线更新源生成.
@@ -26,6 +26,8 @@ import os
 import sys
 from datetime import date
 from pathlib import Path
+
+from publish_release import sign_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUILD_ROOT = Path(r"D:\RDC-Build")
@@ -103,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
             }
         ],
     }
+    try:
+        manifest = sign_manifest(manifest, os.environ.get("RDC_UPDATE_SIGNING_KEY", "").strip())
+    except ValueError as error:
+        _emit(f"清单签名失败, 不输出: {error}")
+        return 1
     path = out_dir / "update-manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     _emit(f"更新清单: {path}")

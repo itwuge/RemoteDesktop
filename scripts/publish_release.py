@@ -180,12 +180,52 @@ def write_text(path: Path, payload: str) -> None:
     path.write_text(payload, encoding="utf-8", newline="\n")
 
 
+def _default_signing_key() -> str:
+    """签名私钥路径: 只从环境变量读取, 私钥不写进仓库与产物."""
+    return os.environ.get("RDC_UPDATE_SIGNING_KEY", "").strip()
+
+
+def sign_manifest(manifest: dict[str, object], key_path: str) -> dict[str, object]:
+    """用发布私钥给清单签名; key_id 必须与客户端内置公钥一致, 否则拒绝出包."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from rdc.crypto.identity import b64encode
+    from rdc.update.signing import KEY_ID, PUBLIC_KEY_B64, key_id_for, sign_payload
+
+    if not key_path:
+        raise ValueError("未配置签名私钥: 请把 RDC_UPDATE_SIGNING_KEY 设为私钥 PEM 路径")
+    path = Path(key_path).expanduser()
+    if not path.is_file():
+        raise ValueError(f"签名私钥不存在: {path}")
+    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("签名私钥必须是 Ed25519 PEM (PKCS8)")
+    raw_public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    key_id = key_id_for(raw_public)
+    if key_id != KEY_ID or b64encode(raw_public) != PUBLIC_KEY_B64:
+        raise ValueError(f"签名私钥与客户端内置公钥不匹配: 私钥 key_id {key_id}, 内置 {KEY_ID}")
+    return sign_payload(manifest, key, key_id)
+
+
 def verify_release(manifest_path: Path) -> dict[str, object]:
-    """回读清单并逐个核对同目录资产的 sha256 与大小."""
+    """回读清单, 先验签再逐个核对同目录资产的 sha256 与大小."""
     sys.path.insert(0, str(ROOT / "src"))
     from rdc.update.manifest import parse_manifest
+    from rdc.update.signing import ManifestSignatureError, verify_manifest_signature
 
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        verify_manifest_signature(raw)
+    except ManifestSignatureError as error:
+        return {
+            "manifest": str(manifest_path),
+            "signature_ok": False,
+            "error": str(error),
+            "assets": [],
+            "passed": False,
+        }
     checked = []
     for asset in raw.get("assets", []):
         platform = str(asset.get("platform", ""))
@@ -204,7 +244,12 @@ def verify_release(manifest_path: Path) -> dict[str, object]:
                 "size_match": size == int(asset.get("size", -1)),
             }
         )
-    return {"manifest": str(manifest_path), "assets": checked, "passed": all(item["sha256_match"] for item in checked)}
+    return {
+        "manifest": str(manifest_path),
+        "signature_ok": True,
+        "assets": checked,
+        "passed": all(item["sha256_match"] for item in checked),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -223,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--release-date", default=date.today().isoformat())
     parser.add_argument("--min-version", default="0.1.0")
     parser.add_argument("--notes-file", default="", help="更新说明文件, 每行一条")
+    parser.add_argument("--signing-key", default="", help="Ed25519 私钥 PEM 路径, 默认取 RDC_UPDATE_SIGNING_KEY")
     parser.add_argument("--mandatory", action="store_true")
     parser.add_argument(
         "--platform-unavailable",
@@ -269,6 +315,12 @@ def main(argv: list[str] | None = None) -> int:
         platforms=platforms,
     )
 
+    try:
+        manifest = sign_manifest(manifest, args.signing_key.strip() or _default_signing_key())
+    except ValueError as error:
+        _emit(f"清单签名失败, 不出包: {error}")
+        return 1
+
     staging = out_root / tag
     repo_root = out_root / "github" / repo / "releases"
     locations = [staging, repo_root / "download" / tag, repo_root / "latest" / "download"]
@@ -288,6 +340,11 @@ def main(argv: list[str] | None = None) -> int:
         "repo": repo,
         "manifest_name": manifest_name,
         "asset_url_base": asset_url_base,
+        "signature": {
+            "alg": "ed25519",
+            "key_id": str(manifest.get("signature", {}).get("key_id", "")),
+            "signed": True,
+        },
         "remote_actions_executed": False,
         "artifacts": [
             {"name": path.name, "platform": item_platform, "kind": kind, "size": path.stat().st_size}
@@ -305,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit(f"[清单] {directory / manifest_name}")
     for item in verifications:
         state = "通过" if item["passed"] else "失败"
-        _emit(f"[回读] {item['manifest']}: {state}")
+        _emit(f"[回读] {item['manifest']}: {state} (验签 {'通过' if item['signature_ok'] else '失败'})")
     _emit("")
     names = " ".join(path.name for path, _, _ in artifacts)
     _emit("远端命令(仅打印, 未执行):")

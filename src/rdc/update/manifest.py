@@ -25,7 +25,8 @@ v2 清单按平台列出 Release 资产, 客户端只取当前平台与当前形
     }
 
 v1 单产物清单(顶层 download_url + sha256)继续兼容, 便于旧清单与本地演练.
-下载地址允许 http、https、file 三种协议或本地路径, 其余协议一律拒绝.
+下载地址允许 https、file 或本地路径; 非回环的 http 与其它协议一律拒绝.
+清单必须携带 Ed25519 签名, 由 ``signing.verify_manifest_signature`` 校验, 验签失败拒绝更新.
 """
 
 from __future__ import annotations
@@ -36,10 +37,14 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+from rdc.update.signing import BUILTIN_TRUST, TrustAnchor, verify_manifest_signature
+from rdc.update.source import is_loopback_url
 from rdc.update.versioning import parse_version
 from rdc.version import platform_tag
 
-ALLOWED_SCHEMES = {"http", "https", "file"}
+ALLOWED_SCHEMES = {"https", "file"}
+# 本机发布演练用回环 http, 其它 http 不进入白名单
+LOOPBACK_SCHEMES = {"http"}
 COMMON_FIELDS = ("version", "release_date", "notes", "mandatory", "min_supported_version")
 FLAT_FIELDS = (*COMMON_FIELDS, "download_url", "sha256")
 ASSET_FIELDS = ("platform", "kind", "name", "url", "sha256")
@@ -164,10 +169,12 @@ def _safe_name(resolved_url: str, raw_url: str) -> str:
 
 
 def resolve_download_url(source: str, download_url: str) -> str:
-    """把清单中的下载地址解析为可直接访问的地址."""
+    """把清单中的下载地址解析为可直接访问的地址; 非回环 http 直接拒绝."""
     parsed = urlparse(download_url)
     if parsed.scheme:
-        if parsed.scheme not in ALLOWED_SCHEMES:
+        if parsed.scheme == "http" and not is_loopback_url(download_url):
+            raise ValueError(f"更新包下载地址不允许 http: {download_url}")
+        if parsed.scheme not in ALLOWED_SCHEMES and parsed.scheme not in LOOPBACK_SCHEMES:
             raise ValueError(f"不支持的下载协议: {parsed.scheme}")
         return download_url
 
@@ -232,8 +239,10 @@ def parse_manifest(
     source: str,
     platform: str | None = None,
     preferred_kind: str = "",
+    trust: TrustAnchor = BUILTIN_TRUST,
 ) -> UpdateManifest:
-    """校验并构造更新清单; 任一字段不合法抛出 ValueError."""
+    """先验签再校验字段; 任一字段不合法或验签失败抛出 ValueError."""
+    verify_manifest_signature(payload, trust)
     if not isinstance(payload, dict):
         raise ValueError("更新清单必须是 JSON 对象")
 

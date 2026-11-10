@@ -8,16 +8,22 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from rdc.core.errors import (
     UPDATE_DOWNGRADE_REJECTED,
     UPDATE_HASH_MISMATCH,
     UPDATE_MANIFEST_INVALID,
+    UPDATE_SIGNATURE_INVALID,
+    UPDATE_SOURCE_INSECURE,
     UPDATE_SOURCE_UNREACHABLE,
 )
 from rdc.core.logging import reset_for_tests
+from rdc.crypto.identity import b64encode
 from rdc.update.manifest import parse_manifest
 from rdc.update.service import UpdateService
+from rdc.update.signing import SIGNATURE_FIELD, TrustAnchor, key_id_for, sign_payload, verify_manifest_signature
 from rdc.update.source import (
     DEFAULT_GITHUB_REPO,
     default_source_value,
@@ -26,6 +32,14 @@ from rdc.update.source import (
 )
 from rdc.update.versioning import compare_versions, parse_version
 from rdc.version import platform_tag
+
+# 测试专用密钥: 只在本进程内生成, 与客户端内置发布公钥无关
+_TEST_KEY = Ed25519PrivateKey.generate()
+_TEST_PUBLIC_RAW = _TEST_KEY.public_key().public_bytes(
+    encoding=serialization.Encoding.Raw,
+    format=serialization.PublicFormat.Raw,
+)
+TEST_TRUST = TrustAnchor(public_key_b64=b64encode(_TEST_PUBLIC_RAW), key_id=key_id_for(_TEST_PUBLIC_RAW))
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +68,11 @@ def _asset(payload: bytes, **overrides: object) -> dict[str, object]:
     return asset
 
 
+def _sign(payload: dict[str, object]) -> dict[str, object]:
+    """用测试私钥签名, 模拟发布脚本产出的清单."""
+    return sign_payload(payload, _TEST_KEY, TEST_TRUST.key_id)
+
+
 def _manifest(assets: list[dict[str, object]], **overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema": 2,
@@ -65,7 +84,7 @@ def _manifest(assets: list[dict[str, object]], **overrides: object) -> dict[str,
         "assets": assets,
     }
     payload.update(overrides)
-    return payload
+    return _sign(payload)
 
 
 def _write_source(directory: Path, manifest: dict[str, object], payload: bytes, name: str) -> Path:
@@ -74,6 +93,11 @@ def _write_source(directory: Path, manifest: dict[str, object], payload: bytes, 
     path = directory / "update-manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8", newline="\n")
     return path
+
+
+def _service(current: str, source: str, work: Path, **options: object) -> UpdateService:
+    """构造带测试信任锚的更新服务; 产品代码使用内置发布公钥."""
+    return UpdateService(current_version=current, source=source, work_dir=work, trust_anchor=TEST_TRUST, **options)
 
 
 def _wait_done(service: UpdateService, task_id: str, timeout: float = 5.0) -> dict[str, object]:
@@ -135,7 +159,11 @@ def test_manifest_v2_selects_platform_and_form(tmp_path: Path) -> None:
     """清单含多平台多形态时, 只取当前平台与指定形态的产物."""
     payload = _manifest([_asset(b"portable")], version="0.2.0")
     manifest = parse_manifest(
-        payload, source=str(tmp_path / "update-manifest.json"), platform="windows-x64", preferred_kind="portable"
+        payload,
+        source=str(tmp_path / "update-manifest.json"),
+        platform="windows-x64",
+        preferred_kind="portable",
+        trust=TEST_TRUST,
     )
     assert manifest.schema == 2
     assert manifest.asset_kind == "portable"
@@ -145,11 +173,17 @@ def test_manifest_v2_selects_platform_and_form(tmp_path: Path) -> None:
     installer = _asset(b"installer", kind="installer", name="rdc-desktop-0.2.0-windows-x64-setup.exe")
     payload = _manifest([installer, _asset(b"portable")])
     selected = parse_manifest(
-        payload, source=str(tmp_path / "update-manifest.json"), platform="windows-x64", preferred_kind="installer"
+        payload,
+        source=str(tmp_path / "update-manifest.json"),
+        platform="windows-x64",
+        preferred_kind="installer",
+        trust=TEST_TRUST,
     )
     assert selected.asset_name.endswith("-setup.exe")
 
-    alias = parse_manifest(payload, source=str(tmp_path / "update-manifest.json"), platform="windows-amd64")
+    alias = parse_manifest(
+        payload, source=str(tmp_path / "update-manifest.json"), platform="windows-amd64", trust=TEST_TRUST
+    )
     assert alias.asset_platform == "windows-x64"
 
 
@@ -158,27 +192,29 @@ def test_manifest_rejects_missing_platform_and_bad_fields(tmp_path: Path) -> Non
     source = str(tmp_path / "update-manifest.json")
     mac_only = _manifest([_asset(b"x", platform="macos-arm64")])
     with pytest.raises(ValueError, match="缺少平台"):
-        parse_manifest(mac_only, source=source, platform="windows-x64")
+        parse_manifest(mac_only, source=source, platform="windows-x64", trust=TEST_TRUST)
 
     with pytest.raises(ValueError, match="sha256"):
-        parse_manifest(_manifest([_asset(b"x", sha256="abc")]), source=source, platform="windows-x64")
+        parse_manifest(_manifest([_asset(b"x", sha256="abc")]), source=source, platform="windows-x64", trust=TEST_TRUST)
 
     with pytest.raises(ValueError, match="kind"):
-        parse_manifest(_manifest([_asset(b"x", kind="dmg")]), source=source, platform="windows-x64")
+        parse_manifest(_manifest([_asset(b"x", kind="dmg")]), source=source, platform="windows-x64", trust=TEST_TRUST)
 
 
 def test_manifest_v1_flat_still_supported(tmp_path: Path) -> None:
     """旧版单产物清单继续可用, 便于历史演练脚本迁移."""
-    payload = {
-        "version": "0.2.0",
-        "download_url": "pkg.zip",
-        "sha256": _sha256(b"flat"),
-        "release_date": "2026-11-10",
-        "notes": "旧清单",
-        "mandatory": True,
-        "min_supported_version": "0.1.0",
-    }
-    manifest = parse_manifest(payload, source=str(tmp_path / "manifest.json"))
+    payload = _sign(
+        {
+            "version": "0.2.0",
+            "download_url": "pkg.zip",
+            "sha256": _sha256(b"flat"),
+            "release_date": "2026-11-10",
+            "notes": "旧清单",
+            "mandatory": True,
+            "min_supported_version": "0.1.0",
+        }
+    )
+    manifest = parse_manifest(payload, source=str(tmp_path / "manifest.json"), trust=TEST_TRUST)
     assert manifest.schema == 1
     assert manifest.mandatory is True
     assert manifest.download_url.endswith("pkg.zip")
@@ -190,7 +226,7 @@ def test_service_check_download_verify_local_source(tmp_path: Path) -> None:
     manifest = _manifest([_asset(payload)])
     _write_source(tmp_path / "source", manifest, payload, _asset(payload)["name"])
 
-    service = UpdateService(current_version="0.1.0", source=f"local:{tmp_path / 'source'}", work_dir=tmp_path / "dl")
+    service = _service("0.1.0", f"local:{tmp_path / 'source'}", tmp_path / "dl")
     status = service.refresh_update_status()
     assert status.ok
     assert status.data is not None
@@ -212,7 +248,7 @@ def test_service_rejects_downgrade(tmp_path: Path) -> None:
     payload = b"old"
     manifest = _manifest([_asset(payload)])
     _write_source(tmp_path / "source", manifest, payload, _asset(payload)["name"])
-    service = UpdateService(current_version="1.0.0", source=f"local:{tmp_path / 'source'}", work_dir=tmp_path / "dl")
+    service = _service("1.0.0", f"local:{tmp_path / 'source'}", tmp_path / "dl")
     result = service.refresh_update_status()
     assert not result.ok
     assert result.error_code == UPDATE_DOWNGRADE_REJECTED
@@ -223,7 +259,7 @@ def test_service_hash_mismatch_removes_file(tmp_path: Path) -> None:
     payload = b"tampered"
     manifest = _manifest([_asset(payload, sha256=_sha256(b"expected"))])
     _write_source(tmp_path / "source", manifest, payload, _asset(payload)["name"])
-    service = UpdateService(current_version="0.1.0", source=f"local:{tmp_path / 'source'}", work_dir=tmp_path / "dl")
+    service = _service("0.1.0", f"local:{tmp_path / 'source'}", tmp_path / "dl")
     service.refresh_update_status()
     started = service.start_update_download()
     task_id = str((started.data or {}).get("task_id", ""))
@@ -235,7 +271,7 @@ def test_service_hash_mismatch_removes_file(tmp_path: Path) -> None:
 
 def test_service_unreachable_source_and_download_without_check(tmp_path: Path) -> None:
     """源不可达返回 UPDATE_SOURCE_UNREACHABLE; 未检查先下载被拒绝."""
-    service = UpdateService(current_version="0.1.0", source=f"local:{tmp_path / 'missing'}", work_dir=tmp_path / "dl")
+    service = _service("0.1.0", f"local:{tmp_path / 'missing'}", tmp_path / "dl")
     result = service.refresh_update_status()
     assert result.error_code == UPDATE_SOURCE_UNREACHABLE
     assert service.start_update_download().ok is False
@@ -256,22 +292,12 @@ def test_service_prefers_installer_or_portable_by_configuration(tmp_path: Path) 
         (source_dir / str(asset["name"])).write_bytes(payload)
     (source_dir / "update-manifest.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
 
-    portable_service = UpdateService(
-        current_version="0.1.0",
-        source=f"local:{source_dir}",
-        work_dir=tmp_path / "dl-portable",
-        preferred_kind="portable",
-    )
+    portable_service = _service("0.1.0", f"local:{source_dir}", tmp_path / "dl-portable", preferred_kind="portable")
     portable_status = portable_service.refresh_update_status()
     assert portable_status.ok
     assert (portable_status.data or {})["asset_kind"] == "portable"
 
-    installer_service = UpdateService(
-        current_version="0.1.0",
-        source=f"local:{source_dir}",
-        work_dir=tmp_path / "dl-installer",
-        preferred_kind="installer",
-    )
+    installer_service = _service("0.1.0", f"local:{source_dir}", tmp_path / "dl-installer", preferred_kind="installer")
     installer_status = installer_service.refresh_update_status()
     assert (installer_status.data or {})["asset_kind"] == "installer"
 
@@ -280,8 +306,80 @@ def test_invalid_manifest_reports_manifest_invalid(tmp_path: Path) -> None:
     """清单 JSON 合法但字段非法时返回 UPDATE_MANIFEST_INVALID, 不崩溃."""
     source_dir = tmp_path / "source"
     source_dir.mkdir()
-    (source_dir / "update-manifest.json").write_text('{"version": "not-semver"}', encoding="utf-8")
-    service = UpdateService(current_version="0.1.0", source=f"local:{source_dir}", work_dir=tmp_path / "dl")
+    (source_dir / "update-manifest.json").write_text(
+        json.dumps(_sign({"version": "not-semver"}), ensure_ascii=False), encoding="utf-8"
+    )
+    service = _service("0.1.0", f"local:{source_dir}", tmp_path / "dl")
     result = service.refresh_update_status()
     assert result.error_code in {UPDATE_MANIFEST_INVALID, UPDATE_SOURCE_UNREACHABLE}
     assert result.ok is False
+
+
+def test_manifest_tampered_content_rejected(tmp_path: Path) -> None:
+    """签名后改动清单内容: 验签失败, 拒绝更新且不允许下载."""
+    payload = b"pkg-bytes"
+    manifest = _manifest([_asset(payload)])
+    path = _write_source(tmp_path / "source", manifest, payload, _asset(payload)["name"])
+    tampered = json.loads(path.read_text(encoding="utf-8"))
+    tampered["notes"] = ["被替换的说明"]
+    path.write_text(json.dumps(tampered, ensure_ascii=False), encoding="utf-8", newline="\n")
+
+    service = _service("0.1.0", f"local:{tmp_path / 'source'}", tmp_path / "dl")
+    result = service.refresh_update_status()
+    assert result.ok is False
+    assert result.error_code == UPDATE_SIGNATURE_INVALID
+    assert "签名" in result.message
+    assert service.start_update_download().ok is False
+
+
+def test_manifest_tampered_signature_rejected(tmp_path: Path) -> None:
+    """签名值被改写: 验签失败, 拒绝更新."""
+    payload = b"pkg-bytes"
+    manifest = _manifest([_asset(payload)])
+    block = manifest[SIGNATURE_FIELD]
+    assert isinstance(block, dict)
+    value = str(block["value"])
+    block["value"] = ("B" if value[0] != "B" else "C") + value[1:]
+    _write_source(tmp_path / "source", manifest, payload, _asset(payload)["name"])
+
+    service = _service("0.1.0", f"local:{tmp_path / 'source'}", tmp_path / "dl")
+    result = service.refresh_update_status()
+    assert result.ok is False
+    assert result.error_code == UPDATE_SIGNATURE_INVALID
+    assert "签名" in result.message
+
+
+def test_manifest_wrong_public_key_rejected(tmp_path: Path) -> None:
+    """清单由另一把密钥签名, 客户端内置/注入的公钥对不上时拒绝."""
+    payload = b"pkg-bytes"
+    manifest = _manifest([_asset(payload)])
+    _write_source(tmp_path / "source", manifest, payload, _asset(payload)["name"])
+
+    other_key = Ed25519PrivateKey.generate()
+    other_raw = other_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    other_trust = TrustAnchor(public_key_b64=b64encode(other_raw), key_id=key_id_for(other_raw))
+    service = UpdateService(
+        current_version="0.1.0",
+        source=f"local:{tmp_path / 'source'}",
+        work_dir=tmp_path / "dl",
+        trust_anchor=other_trust,
+    )
+    result = service.refresh_update_status()
+    assert result.ok is False
+    assert result.error_code == UPDATE_SIGNATURE_INVALID
+    assert "密钥不匹配" in result.message
+    with pytest.raises(ValueError, match="密钥不匹配"):
+        verify_manifest_signature(manifest, other_trust)
+
+
+def test_http_update_source_rejected(tmp_path: Path) -> None:
+    """非回环 http 更新源直接拒绝, 不发起请求."""
+    service = _service("0.1.0", "http://update.example.com/rdc", tmp_path / "dl")
+    result = service.refresh_update_status()
+    assert result.ok is False
+    assert result.error_code == UPDATE_SOURCE_INSECURE
+    assert "http" in result.message
+    assert service.start_update_download().ok is False

@@ -39,6 +39,18 @@ KIND_MIRROR = "mirror"
 KIND_LOCAL = "local"
 
 _REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def is_loopback_url(url: str) -> bool:
+    """判断地址是否指向本机回环; 本机发布演练允许 http, 其它 http 一律视为不安全."""
+    host = (urlparse(url).hostname or "").strip().lower()
+    return host in LOOPBACK_HOSTS or host.endswith(".localhost")
+
+
+def is_insecure_http_url(url: str) -> bool:
+    """非回环的 http 地址视为不安全: 生产只允许 https、本地目录或 file."""
+    return urlparse(url).scheme == "http" and not is_loopback_url(url)
 
 
 @dataclass(frozen=True)
