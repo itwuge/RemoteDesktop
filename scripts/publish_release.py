@@ -54,6 +54,7 @@ SUFFIX_KINDS = (
     (".AppImage", "portable"),
 )
 PLATFORM_PATTERN = re.compile(r"^(?P<platform>[a-z]+-[a-z0-9_]+)(?P<tail>.+)$")
+GATEKEEPER_HINT = "未签名未公证: 首次打开需右键选择「打开」, 或执行 xattr -d com.apple.quarantine rdc-desktop.app"
 
 
 def _emit(text: str = "") -> None:
@@ -158,6 +159,8 @@ def build_manifest(
     }
     if platforms:
         manifest["platforms"] = platforms
+    if any(str(asset["platform"]).startswith("macos-") for asset in assets):
+        manifest["darwin"] = darwin_section(assets)
     return manifest
 
 
@@ -312,6 +315,27 @@ def main(argv: list[str] | None = None) -> int:
     _emit(f"仓库前置: https://github.com/{repo} 需已存在且为公开仓库; 私有仓库会把令牌带进客户端, 不接受.")
     _emit(f"演练输出: {out_root}")
     return 0 if passed else 1
+
+
+def darwin_section(assets: list[dict[str, object]]) -> dict[str, object]:
+    """按架构汇总 macOS 资产, 供清单 darwin 字段使用."""
+    architectures: dict[str, dict[str, object]] = {}
+    for asset in assets:
+        platform = str(asset.get("platform", ""))
+        kind = str(asset.get("kind", ""))
+        if not platform.startswith("macos-"):
+            continue
+        arch = platform.split("-", 1)[1]
+        entry = architectures.setdefault(arch, {"platform": platform, "assets": {}})
+        slots = entry["assets"]
+        if isinstance(slots, dict):
+            slots[kind] = {
+                "name": asset["name"],
+                "url": asset["url"],
+                "sha256": asset["sha256"],
+                "size": asset["size"],
+            }
+    return {"signed": False, "notarized": False, "gatekeeper": GATEKEEPER_HINT, "architectures": architectures}
 
 
 def _read_notes(path: str) -> list[str]:

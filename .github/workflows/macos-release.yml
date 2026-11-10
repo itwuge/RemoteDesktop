@@ -1,0 +1,169 @@
+name: macOS Desktop Build
+
+# macOS 只在 GitHub 提供的 runner 上构建, 与 Windows/Linux 本地发布流程互不影响.
+# 触发: 推送 v* 标签; 或手动 workflow_dispatch(可只构建不上传).
+# 签名/公证开关默认关闭: 本项目不上架 App Store, 不购买 Apple 开发者账号.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建的标签(留空则使用当前 ref)"
+        required: false
+        default: ""
+      publish:
+        description: "上传到 GitHub Release"
+        type: boolean
+        default: false
+      sign:
+        description: "启用签名/公证(需先配置 secrets, 默认关闭)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RDC_BUILD_ROOT: ${{ runner.temp }}/rdc-build
+  TAG: ${{ inputs.tag || github.ref_name }}
+  REPO: ${{ github.repository }}
+
+jobs:
+  build:
+    name: build-macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          # macos-13(Intel) 已退役, 用官方接棒的 macos-15-intel 出 x86_64 包
+          - arch: x64
+            runner: macos-15-intel
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-desktop.txt pyinstaller==6.10.0
+
+      - name: 导入签名证书(可选, 默认跳过)
+        if: ${{ inputs.sign == true }}
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ]; then
+            echo "未配置 MACOS_CERT_P12, 跳过签名"
+            exit 0
+          fi
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: 构建 dmg 与便携 zip
+        env:
+          CODESIGN_IDENTITY: ${{ inputs.sign == true && secrets.MACOS_SIGN_IDENTITY || '' }}
+        run: |
+          bash scripts/build_macos.sh "$RDC_BUILD_ROOT"
+          ls -lh "$RDC_BUILD_ROOT/artifacts/desktop"
+
+      - name: 公证 dmg(可选, 默认跳过)
+        if: ${{ inputs.sign == true && env.HAS_NOTARY == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG=$(ls "$RDC_BUILD_ROOT"/artifacts/desktop/*.dmg | head -1)
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            ${{ env.RDC_BUILD_ROOT }}/artifacts/desktop/*.dmg
+            ${{ env.RDC_BUILD_ROOT }}/artifacts/desktop/*.zip
+            ${{ env.RDC_BUILD_ROOT }}/artifacts/desktop/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish-macos-assets
+    needs: build
+    runs-on: macos-14
+    if: ${{ github.event_name == 'push' || inputs.publish == true }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: 下载两个架构的产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: dist
+          merge-multiple: true
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 列出待上传资产
+        run: ls -lh dist
+
+      - name: 创建或复用 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在, 追加资产"
+          else
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" \
+              --notes "macOS arm64/x64 构建产物（未签名未公证）。Windows/Linux 资产由发布脚本补充。首次打开放行步骤见 docs/使用说明-macOS构建与签名.md。"
+          fi
+          gh release upload "$TAG" dist/*.dmg dist/*.zip dist/*.sha256 --repo "$REPO" --clobber
+
+      - name: 合并 darwin 清单条目
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          URL="https://github.com/$REPO/releases/download/$TAG/update-manifest.json"
+          python scripts/merge_macos_manifest.py --tag "$TAG" --assets dist --repo "$REPO" --manifest "$URL" --out dist/update-manifest.json
+          if [ -f dist/update-manifest.json ]; then
+            gh release upload "$TAG" dist/update-manifest.json --repo "$REPO" --clobber
+          elif [ -f update-manifest-macos.json ]; then
+            echo "::warning::Release 尚无 update-manifest.json, 已输出 macOS fragment, 需与 Windows/Linux 清单合并后再上传"
+            gh release upload "$TAG" update-manifest-macos.json --repo "$REPO" --clobber
+          fi
