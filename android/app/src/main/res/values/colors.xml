@@ -7,5 +7,5 @@
   职责边界    : 只放颜色常量
 -->
 <resources>
-    <color name="ic_launcher_background">#2F63D8</color>
+    <color name="ic_launcher_background">#3B7BF6</color>
 </resources>

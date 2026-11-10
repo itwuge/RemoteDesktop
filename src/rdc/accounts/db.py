@@ -117,7 +117,8 @@ ON CONFLICT(account_id) DO UPDATE SET
 """
 
 DEVICE_UPSERT = """
-INSERT INTO devices (device_id, display_name, owner_account_id, bound_at, require_confirm, last_seen_at, presence_offline)
+INSERT INTO devices (device_id, display_name, owner_account_id, bound_at, require_confirm,
+                     last_seen_at, presence_offline)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(device_id) DO UPDATE SET
     display_name = excluded.display_name,
@@ -128,7 +129,7 @@ ON CONFLICT(device_id) DO UPDATE SET
     presence_offline = excluded.presence_offline
 """
 
-TOKEN_UPSERT = """
+AUTH_RECORD_UPSERT = """
 INSERT INTO tokens (token_hash, kind, account_id, device_id, issued_at, expires_at, revoked_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(token_hash) DO UPDATE SET
@@ -269,8 +270,7 @@ class AccountDatabase:
 
     def load_accounts(self) -> list[tuple[Any, ...]]:
         return self._fetch(
-            "SELECT account_id, name, salt, password_hash, created_at, password_changed_at"
-            " FROM accounts ORDER BY rowid"
+            "SELECT account_id, name, salt, password_hash, created_at, password_changed_at FROM accounts ORDER BY rowid"
         )
 
     def load_devices(self) -> list[tuple[Any, ...]]:
@@ -321,7 +321,7 @@ class AccountDatabase:
         self._execute_many(DEVICE_UPSERT, rows)
 
     def save_tokens(self, rows: Sequence[Sequence[Any]]) -> None:
-        self._execute_many(TOKEN_UPSERT, rows)
+        self._execute_many(AUTH_RECORD_UPSERT, rows)
 
     def save_grants(self, rows: Sequence[Sequence[Any]]) -> None:
         self._execute_many(GRANT_UPSERT, rows)

@@ -14,7 +14,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from rdc.accounts.db import AccountStoreError, default_database_path
 from rdc.accounts.service import AccountService
+from rdc.accounts.store import AccountStore
 from rdc.core.result import CommandResult
 
 _service = AccountService()
@@ -24,6 +28,20 @@ def configure(service: AccountService) -> None:
     """由装配处注入账号后端."""
     global _service
     _service = service
+
+
+def configure_persistent_store(path: str | Path | None = None) -> str | None:
+    """装配落盘账号库; 成功返回 None, 不可用时退化为内存存储并返回用户可见原因.
+
+    只替换内部存储实现, 命令函数签名、返回字段与错误码均不变.
+    """
+    try:
+        store = AccountStore(default_database_path() if path is None else path)
+    except AccountStoreError as exc:
+        configure(AccountService())
+        return f"账号数据文件不可用, 本次运行无法保存账号: {exc}"
+    configure(AccountService(store=store))
+    return None
 
 
 def get_service() -> AccountService:

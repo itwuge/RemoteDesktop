@@ -14,8 +14,9 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from rdc.commands import accounts as accounts_commands
 from rdc.core import crashguard, runtime
 from rdc.core.logging import configure as configure_logging
 from rdc.ui import icons
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     crashguard.install_exception_hooks()
     fault_log = crashguard.enable_faulthandler()
     crashguard.log_session_start(version=__version__, fault_log=str(fault_log))
+    storage_warning = accounts_commands.configure_persistent_store()
 
     app = QApplication.instance()
     if app is None or not isinstance(app, QApplication):
@@ -45,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     apply_theme(app)
     window = MainWindow()
     window.show()
+    if storage_warning:
+        QMessageBox.warning(window, "RDC 远程桌面", storage_warning)
     crashguard.start_heartbeat(app)
     QTimer.singleShot(800, window.start_silent_update_check)
     return app.exec()

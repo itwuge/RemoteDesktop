@@ -346,10 +346,12 @@ class AccountStore:
         return None if self.database is None else self.database.path
 
     def close(self) -> None:
-        """关闭落盘连接; 纯内存存储下为空操作, 可重复调用."""
+        """关闭落盘连接; 纯内存存储下为空操作, 可重复调用.
+
+        关闭后继续写入会抛 `AccountStoreError`, 不会静默退化成只写内存.
+        """
         if self.database is not None:
             self.database.close()
-            self.database = None
 
     def _load(self) -> None:
         """按插入顺序载入历史数据; 只由构造期调用, 不触发回写."""
@@ -436,6 +438,7 @@ class AccountStore:
         account.salt = secrets.token_bytes(16)
         account.password_hash = derive_password(new_password, account.salt)
         account.password_changed_at = _iso(time.time())
+        self._save_accounts([account])
         self.revoke_account_tokens(account.account_id)
 
     # ------------------------------------------------------------------ 设备
@@ -444,9 +447,10 @@ class AccountStore:
         device = self.devices.get(device_id)
         if device is None:
             device = DeviceRecord(device_id=device_id, display_name=display_name)
-            self.devices[device_id] = device
         else:
             device.display_name = display_name
+        self._save_devices([device])
+        self.devices[device_id] = device
         return device
 
     def bind_device(self, device_id: str, account_id: str) -> DeviceRecord:
@@ -454,6 +458,7 @@ class AccountStore:
         device = self.devices[device_id]
         device.owner_account_id = account_id
         device.bound_at = _iso(time.time())
+        self._save_devices([device])
         return device
 
     def unbind_device(self, device_id: str) -> None:
@@ -461,6 +466,7 @@ class AccountStore:
         device = self.devices[device_id]
         device.owner_account_id = None
         device.bound_at = None
+        self._save_devices([device])
         self.revoke_device_tokens(device_id)
 
     def record_presence(self, device_id: str, state: str = "online", now: float | None = None) -> bool:
@@ -471,9 +477,11 @@ class AccountStore:
         current = time.time() if now is None else now
         if state == "offline":
             device.presence_offline = True
+            self._save_devices([device])
             return True
         device.presence_offline = False
         device.last_seen_at = current
+        self._save_devices([device])
         return True
 
     def presence_state(self, device_id: str, now: float | None = None) -> str:
@@ -513,6 +521,7 @@ class AccountStore:
             expires_at=now + ttl_seconds,
         )
         self.tokens[record.token_hash] = record
+        self._save_tokens([record])
         return secret, record
 
     def lookup_token(self, secret: str) -> TokenRecord | None:
@@ -524,12 +533,15 @@ class AccountStore:
         now = time.time()
         revoked = 0
         kicked = 0
+        changed: list[TokenRecord] = []
         for record in self.tokens.values():
             if record.device_id == device_id and record.revoked_at is None:
                 record.revoked_at = now
+                changed.append(record)
                 revoked += 1
                 if record.kind == "session":
                     kicked += 1
+        self._save_tokens(changed)
         if kicked:
             self.kicked_sessions.append(device_id)
         return revoked, kicked
@@ -539,25 +551,31 @@ class AccountStore:
         now = time.time()
         revoked = 0
         kicked = 0
+        changed: list[TokenRecord] = []
         for token_hash in hashes:
             record = self.tokens.get(token_hash)
             if record is None or record.revoked_at is not None:
                 continue
             record.revoked_at = now
+            changed.append(record)
             revoked += 1
             if record.kind == "session":
                 kicked += 1
+        self._save_tokens(changed)
         return revoked, kicked
 
     def revoke_account_tokens(self, account_id: str) -> int:
         """吊销账号全部令牌, 返回被踢的会话数."""
         now = time.time()
         kicked = 0
+        changed: list[TokenRecord] = []
         for record in self.tokens.values():
             if record.account_id == account_id and record.revoked_at is None:
                 record.revoked_at = now
+                changed.append(record)
                 if record.kind == "session":
                     kicked += 1
+        self._save_tokens(changed)
         if kicked:
             self.kicked_sessions.append(account_id)
         return kicked
@@ -587,6 +605,7 @@ class AccountStore:
             parent_grant_id=parent_grant_id,
         )
         self.grants[grant.grant_id] = grant
+        self._save_grants([grant])
         return grant
 
     def find_active_grant(
@@ -605,12 +624,15 @@ class AccountStore:
                 continue
             if consume and grant.one_time:
                 grant.used_at = time.time()
+                self._save_grants([grant])
             return grant
         return None
 
     def revoke_grant(self, grant_id: str) -> None:
         """撤销即时生效."""
-        self.grants[grant_id].revoked_at = time.time()
+        grant = self.grants[grant_id]
+        grant.revoked_at = time.time()
+        self._save_grants([grant])
 
     # ------------------------------------------------------------------ 申请
     def create_request(self, device_id: str, requester_account_id: str, scope: str, reason: str) -> AccessRequest:
@@ -623,6 +645,7 @@ class AccountStore:
             reason=reason,
         )
         self.requests[request.request_id] = request
+        self._save_requests([request])
         return request
 
     def pending_requests_for_device(self, device_id: str) -> list[AccessRequest]:
@@ -637,26 +660,30 @@ class AccountStore:
         """把超时未处理的申请置为 expired, 返回条数."""
         now = time.time()
         expired = 0
+        changed: list[AccessRequest] = []
         for request in self.requests.values():
             if request.status == "pending" and now - request.created_at > max_age_seconds:
                 request.status = "expired"
                 request.decided_at = now
+                changed.append(request)
                 expired += 1
+        self._save_requests(changed)
         return expired
 
     # ------------------------------------------------------------------ 审计
     def append_audit(self, event: str, actor: str, target: str, result: str, **detail: Any) -> None:
         """追加审计事件; detail 中不得出现口令与令牌明文."""
-        self.audit.append(
-            AuditEvent(
-                ts=_iso(time.time()),
-                event=event,
-                actor=actor,
-                target=target,
-                result=result,
-                detail=detail,
-            )
+        record = AuditEvent(
+            ts=_iso(time.time()),
+            event=event,
+            actor=actor,
+            target=target,
+            result=result,
+            detail=detail,
         )
+        self.audit.append(record)
+        if self.database is not None:
+            self.database.append_audit([_audit_row(record)])
 
     def audit_of_device(self, device_id: str, since: str = "") -> list[AuditEvent]:
         """按设备过滤审计; since 为空表示全部."""

@@ -459,7 +459,7 @@ class SessionActivity : AppCompatActivity() {
 
     private fun actionButton(text: String, background: Int, textColor: Int, onClick: () -> Unit): TextView =
         actionView(text, 11.5f, textColor, background, 10, RdcColor.LINE_STRONG, 39).apply {
-            layoutParams = null
+            layoutParams = LinearLayout.LayoutParams(0, dp(39), 1f)
             setOnClickListener { onClick() }
         }
 
@@ -657,7 +657,7 @@ class SessionActivity : AppCompatActivity() {
 
     private fun smallButton(text: String, onClick: () -> Unit): TextView =
         actionView(text, 10f, RdcColor.TEXT, RdcColor.PANEL_3, 8, RdcColor.LINE_STRONG, 30).apply {
-            layoutParams = null
+            layoutParams = LinearLayout.LayoutParams(0, dp(30), 1f)
             setOnClickListener { onClick() }
         }
 

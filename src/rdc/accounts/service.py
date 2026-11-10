@@ -19,8 +19,10 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any
 
+from rdc.accounts.db import AccountStoreError
 from rdc.accounts.store import (
     DEVICE_TOKEN_TTL_SECONDS,
     GRANT_DEFAULT_TTL_SECONDS,
@@ -51,6 +53,19 @@ ACCOUNT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 ACCESS_CODE_PATTERN = re.compile(r"^\d{6}$")
 SCOPES = frozenset({"view", "control", "full"})
 ACCESS_ROUTES = ("existing_session", "passwordless", "grant", "approval", "denied")
+
+
+def _storage_guarded(func: Callable[..., CommandResult]) -> Callable[..., CommandResult]:
+    """把落盘故障翻译成失败结果; 成功路径、字段与错误码一律不变."""
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> CommandResult:
+        try:
+            return func(*args, **kwargs)
+        except AccountStoreError as exc:
+            return CommandResult(ok=False, message=f"账号数据暂不可用: {exc}")
+
+    return wrapper
 
 
 @dataclass
@@ -142,6 +157,7 @@ class AccountService:
         return account, None
 
     # ------------------------------------------------------------- 账号命令
+    @_storage_guarded
     def register_account(self, account: str, password: str) -> CommandResult:
         """注册账号; 口令只存 PBKDF2 派生值."""
         if not ACCOUNT_NAME_PATTERN.fullmatch(account or ""):
@@ -159,6 +175,7 @@ class AccountService:
             data={"account_id": created.account_id, "created_at": created.created_at},
         )
 
+    @_storage_guarded
     def login_account(self, account: str, password: str) -> CommandResult:
         """登录并签发长期设备令牌与短时会话令牌."""
         found = self.store.find_account_by_name(account)
@@ -189,6 +206,7 @@ class AccountService:
             },
         )
 
+    @_storage_guarded
     def refresh_session_token(self, device_token: str) -> CommandResult:
         """用长期设备令牌换短时会话令牌; 吊销与过期一律拒绝."""
         record = self.store.lookup_token(device_token)
@@ -211,6 +229,7 @@ class AccountService:
         )
 
     # ------------------------------------------------------------- 设备命令
+    @_storage_guarded
     def bind_device(self, device_id: str, access_code: str) -> CommandResult:
         """绑定设备到当前账号; 需有效临时连接码."""
         account, failure = self._require_account()
@@ -234,6 +253,7 @@ class AccountService:
             data={"device_id": device_id, "bound_at": bound.bound_at},
         )
 
+    @_storage_guarded
     def unbind_device(self, device_id: str) -> CommandResult:
         """解绑设备; 解绑即吊销该设备全部令牌并踢掉在线会话."""
         account, failure = self._require_account()
@@ -261,6 +281,7 @@ class AccountService:
             data={"device_id": device_id, "status": "unbound", "kicked_sessions": kicked},
         )
 
+    @_storage_guarded
     def change_password(self, account: str, old_password: str, new_password: str) -> CommandResult:
         """改密: 立即吊销该账号全部令牌, 在线会话被踢."""
         found = self.store.find_account_by_name(account)
@@ -315,6 +336,7 @@ class AccountService:
         """查询在线状态: online、offline 或 unknown."""
         return self.store.presence_state(device_id)
 
+    @_storage_guarded
     def set_trust_policy(self, device_id: str, require_confirm: bool) -> CommandResult:
         """切换免确认开关; 默认 require_confirm=False 即免确认开启.
 
@@ -333,6 +355,7 @@ class AccountService:
             )
 
         device.require_confirm = bool(require_confirm)
+        self.store.save_device(device)
         source = "device" if self._is_device_side(device) else "owner"
         self.store.append_audit(
             "trust_policy.change",
@@ -381,6 +404,7 @@ class AccountService:
             )
         return CommandResult(ok=True, message=f"共 {len(items)} 条授权", data={"items": items})
 
+    @_storage_guarded
     def revoke_grant(self, grant_id: str) -> CommandResult:
         """撤销授权; 立即生效."""
         account, failure = self._require_account()
@@ -406,6 +430,7 @@ class AccountService:
         )
 
     # ------------------------------------------------------- 授权补强命令 (v1.5)
+    @_storage_guarded
     def create_grant(
         self,
         device_id: str,
@@ -464,6 +489,7 @@ class AccountService:
             },
         )
 
+    @_storage_guarded
     def transfer_grant(
         self,
         grant_id: str,
@@ -558,6 +584,7 @@ class AccountService:
             },
         )
 
+    @_storage_guarded
     def logout_account(self) -> CommandResult:
         """登出: 吊销本机设备令牌与会话令牌, 并踢出关联会话."""
         if not self.session_account_id and not self.session_token_hash and not self.device_token_hash:
@@ -592,6 +619,7 @@ class AccountService:
             },
         )
 
+    @_storage_guarded
     def revoke_device_token(self, device_id: str) -> CommandResult:
         """主动吊销某设备全部令牌; 吊销先于返回, 关联会话一并踢出."""
         account, failure = self._require_account()
@@ -632,6 +660,7 @@ class AccountService:
         )
 
     # ------------------------------------------------------------- 申请制
+    @_storage_guarded
     def request_access(self, device_id: str, scope: str, reason: str) -> CommandResult:
         """发起访问申请; 同账号免确认生效时不需要申请."""
         account, failure = self._require_account()
@@ -672,6 +701,7 @@ class AccountService:
             data={"request_id": request.request_id, "status": request.status},
         )
 
+    @_storage_guarded
     def approve_access(self, request_id: str, ttl_seconds: int, one_time: bool) -> CommandResult:
         """审批通过并生成有时限、可一次性的授权."""
         account, failure = self._require_account()
@@ -693,6 +723,7 @@ class AccountService:
         request.status = "approved"
         request.decided_at = time.time()
         request.decided_by = account.account_id
+        self.store.save_request(request)
         grant = self.store.create_grant(
             request.device_id, request.requester_account_id, request.scope, ttl, one_time=bool(one_time)
         )
@@ -712,6 +743,7 @@ class AccountService:
             data={"grant_id": grant.grant_id, "expires_at": _iso(grant.expires_at), "one_time": grant.one_time},
         )
 
+    @_storage_guarded
     def reject_access(self, request_id: str, reason: str) -> CommandResult:
         """拒绝申请; 拒绝留痕并进审计."""
         account, failure = self._require_account()
@@ -730,6 +762,7 @@ class AccountService:
         request.status = "rejected"
         request.decided_at = time.time()
         request.decided_by = account.account_id
+        self.store.save_request(request)
         self.store.append_audit(
             "access.reject",
             account.account_id,
@@ -741,6 +774,7 @@ class AccountService:
         )
         return CommandResult(ok=True, message="已拒绝该申请", data={"request_id": request_id, "status": "rejected"})
 
+    @_storage_guarded
     def list_access_requests(self, direction: str) -> CommandResult:
         """按方向列出申请; incoming 为本机设备待审, outgoing 为本人发起."""
         account, failure = self._require_account()

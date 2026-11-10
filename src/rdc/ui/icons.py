@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QPushButton, QWidget
 
@@ -142,23 +142,113 @@ def _is_light() -> bool:
     return active() is LIGHT
 
 
-def app_icon(light: bool = False) -> QIcon:
-    """应用图标: 自绘圆角渐变底 + 显示器符号, 不依赖外部品牌素材."""
-    token = LIGHT if light else DARK
-    size = 128
+APP_SIZES = (16, 24, 32, 48, 64, 128, 256)
+"""应用图标内置尺寸; 与 scripts/make_app_icon.py 导出的一致, 保证任务栏与资源管理器取到原尺寸."""
+PLATE_STOPS = ((0.0, "#6fa8ff"), (0.52, "#3b7bf6"), (1.0, "#1f55cc"))
+_MARK_DEEP = "#1b4099"
+
+
+def _app_pen(color: str, width: float) -> QPen:
+    pen = QPen(QColor(color))
+    pen.setWidthF(width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    return pen
+
+
+def _app_plate(painter: QPainter, size: float) -> None:
+    """圆角渐变底板: 深色任务栏与浅色桌面下都能立住边界."""
+    inset = size * 0.028
+    rect = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+    radius = size * 0.235
+    gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+    for position, color in PLATE_STOPS:
+        gradient.setColorAt(position, QColor(color))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(gradient)
+    painter.drawRoundedRect(rect, radius, radius)
+    sheen = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.center().y()))
+    sheen.setColorAt(0.0, QColor(255, 255, 255, 54))
+    sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+    painter.setBrush(sheen)
+    painter.drawRoundedRect(rect, radius, radius)
+
+
+def _app_arrow(painter: QPainter, left: QPointF, right: QPointF, width: float, color: str) -> None:
+    """双向箭头: 链路两端可互控."""
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(_app_pen(color, width))
+    painter.drawLine(left, right)
+    head = width * 2.3
+    painter.drawLine(left, QPointF(left.x() + head, left.y() - head * 0.86))
+    painter.drawLine(left, QPointF(left.x() + head, left.y() + head * 0.86))
+    painter.drawLine(right, QPointF(right.x() - head, right.y() - head * 0.86))
+    painter.drawLine(right, QPointF(right.x() - head, right.y() + head * 0.86))
+
+
+def _app_mark(painter: QPainter, size: float) -> None:
+    """显示器 + 双向箭头; 小尺寸退化为实心屏幕, 只保留必要笔画."""
+    if size >= 48:
+        stroke = size * 0.052
+        radius = size * 0.062
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(_app_pen("#ffffff", stroke))
+        painter.drawRoundedRect(QRectF(size * 0.196, size * 0.200, size * 0.608, size * 0.352), radius, radius)
+        painter.drawLine(QPointF(size * 0.5, size * 0.552), QPointF(size * 0.5, size * 0.662))
+        painter.drawLine(QPointF(size * 0.372, size * 0.681), QPointF(size * 0.628, size * 0.681))
+        _app_arrow(
+            painter, QPointF(size * 0.312, size * 0.376), QPointF(size * 0.688, size * 0.376), size * 0.045, "#ffffff"
+        )
+    elif size >= 28:
+        stroke = size * 0.062
+        radius = size * 0.080
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(_app_pen("#ffffff", stroke))
+        painter.drawRoundedRect(QRectF(size * 0.152, size * 0.222, size * 0.696, size * 0.416), radius, radius)
+        _app_arrow(
+            painter, QPointF(size * 0.292, size * 0.430), QPointF(size * 0.708, size * 0.430), size * 0.058, "#ffffff"
+        )
+        painter.drawLine(QPointF(size * 0.5, size * 0.638), QPointF(size * 0.5, size * 0.726))
+        painter.drawLine(QPointF(size * 0.392, size * 0.750), QPointF(size * 0.608, size * 0.750))
+    else:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawRoundedRect(
+            QRectF(size * 0.128, size * 0.196, size * 0.744, size * 0.436), size * 0.11, size * 0.11
+        )
+        painter.drawRoundedRect(
+            QRectF(size * 0.436, size * 0.632, size * 0.128, size * 0.086), size * 0.03, size * 0.03
+        )
+        painter.drawRoundedRect(
+            QRectF(size * 0.310, size * 0.718, size * 0.380, size * 0.082), size * 0.040, size * 0.040
+        )
+        if size >= 22:
+            _app_arrow(
+                painter,
+                QPointF(size * 0.246, size * 0.414),
+                QPointF(size * 0.754, size * 0.414),
+                max(1.3, size * 0.074),
+                _MARK_DEEP,
+            )
+
+
+def app_pixmap(size: int) -> QPixmap:
+    """按目标像素尺寸重绘应用图标, 不做位图缩放."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    from PySide6.QtGui import QLinearGradient
-
-    gradient = QLinearGradient(0, 0, size, size)
-    gradient.setColorAt(0.0, QColor(token["accent"]))
-    gradient.setColorAt(1.0, QColor(token["accent_2"]))
-    painter.setBrush(gradient)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawRoundedRect(4, 4, size - 8, size - 8, 28, 28)
-    glyph = _render("monitor", token["white"], 60, 1.0)
-    painter.drawPixmap((size - 60) // 2, (size - 60) // 2, glyph)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    _app_plate(painter, float(size))
+    _app_mark(painter, float(size))
     painter.end()
-    return QIcon(pixmap)
+    return pixmap
+
+
+def app_icon(light: bool = False) -> QIcon:
+    """应用图标: 自绘品牌图形, 内置 16~256 原尺寸, 不随主题换色."""
+    del light
+    result = QIcon()
+    for size in APP_SIZES:
+        result.addPixmap(app_pixmap(size))
+    return result

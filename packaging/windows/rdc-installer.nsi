@@ -26,6 +26,12 @@ Unicode true
 !define APP_REG_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\RDC"
 !define APP_MUTEX "RDC.Desktop.Setup"
 
+; 图标由 scripts/build_installer.py 通过 /DICON_FILE= 传入, 与 exe 内嵌图标同源
+!ifdef ICON_FILE
+  !define MUI_ICON "${ICON_FILE}"
+  !define MUI_UNICON "${ICON_FILE}"
+!endif
+
 Name "${APP_NAME} ${VERSION}"
 OutFile "${OUT_FILE}"
 InstallDir "$PROGRAMFILES64\${APP_NAME}"
@@ -61,6 +67,9 @@ Section "主程序" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File /r "${SOURCE_DIR}\*.*"
+  !ifdef ICON_FILE
+    File "/oname=$INSTDIR\rdc-desktop.ico" "${ICON_FILE}"
+  !endif
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -69,7 +78,11 @@ Section "主程序" SecMain
   WriteRegStr HKLM "${APP_REG_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "${APP_REG_KEY}" "Publisher" "${APP_PUBLISHER}"
   WriteRegStr HKLM "${APP_REG_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
+  !ifdef ICON_FILE
+    WriteRegStr HKLM "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\rdc-desktop.ico"
+  !else
+    WriteRegStr HKLM "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
+  !endif
   WriteRegStr HKLM "${APP_REG_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegDWORD HKLM "${APP_REG_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${APP_REG_KEY}" "NoRepair" 1

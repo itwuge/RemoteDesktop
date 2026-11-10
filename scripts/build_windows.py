@@ -33,6 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUILD_ROOT = Path(r"D:\RDC-Build")
 APP_DIR_NAME = "rdc-desktop"
+APP_ICON = ROOT / "assets" / "app-icon" / "rdc.ico"
 PORTABLE_CONFIG = '{\n  "update_source": ""\n}\n'
 
 
@@ -78,7 +79,9 @@ def _version_file(version: str) -> str:
     )
 
 
-def _run_pyinstaller(version: str, dist_dir: Path, work_dir: Path, spec_dir: Path, version_file: Path) -> int:
+def _run_pyinstaller(
+    version: str, dist_dir: Path, work_dir: Path, spec_dir: Path, version_file: Path, icon_path: Path | None
+) -> int:
     command = [
         sys.executable,
         "-m",
@@ -100,8 +103,10 @@ def _run_pyinstaller(version: str, dist_dir: Path, work_dir: Path, spec_dir: Pat
         str(spec_dir),
         "--version-file",
         str(version_file),
-        str(ROOT / "src" / "rdc" / "ui" / "__main__.py"),
     ]
+    if icon_path is not None:
+        command.extend(["--icon", str(icon_path)])
+    command.append(str(ROOT / "src" / "rdc" / "ui" / "__main__.py"))
     _emit("执行: " + " ".join(command))
     result = subprocess.run(command, cwd=ROOT, check=False)
     return result.returncode
@@ -158,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="构建 Windows 便携包与校验文件")
     parser.add_argument("--build-root", default=os.environ.get("RDC_BUILD_ROOT", str(DEFAULT_BUILD_ROOT)))
     parser.add_argument("--skip-build", action="store_true", help="复用现有 PyInstaller 产物, 只重打包")
+    parser.add_argument("--icon", default=str(APP_ICON), help="可执行文件图标 (.ico), 传空字符串则不嵌入")
     args = parser.parse_args(argv)
 
     version, basename, platform = _version_info()
@@ -176,7 +182,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_build:
         version_file = stage / "version_info.txt"
         version_file.write_text(_version_file(version), encoding="utf-8", newline="\n")
-        code = _run_pyinstaller(version, dist_dir, work_dir, spec_dir, version_file)
+        icon_path = Path(args.icon) if args.icon else None
+        if icon_path is not None and not icon_path.is_file():
+            _emit(f"未找到图标文件: {icon_path}")
+            return 1
+        code = _run_pyinstaller(version, dist_dir, work_dir, spec_dir, version_file, icon_path)
         if code != 0:
             _emit(f"PyInstaller 构建失败, 退出码 {code}")
             return 1

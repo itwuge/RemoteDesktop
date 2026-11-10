@@ -31,6 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUILD_ROOT = Path(r"D:\RDC-Build")
 NSI_SCRIPT = ROOT / "packaging" / "windows" / "rdc-installer.nsi"
+APP_ICON = ROOT / "assets" / "app-icon" / "rdc.ico"
 MAKENSIS_CANDIDATES = (
     Path(r"C:\Program Files (x86)\NSIS\makensis.exe"),
     Path(r"C:\Program Files\NSIS\makensis.exe"),
@@ -71,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="构建 Windows 安装包")
     parser.add_argument("--build-root", default=os.environ.get("RDC_BUILD_ROOT", str(DEFAULT_BUILD_ROOT)))
     parser.add_argument("--source-dir", default="", help="PyInstaller dist 目录, 默认取构建根下 dist/rdc-desktop")
+    parser.add_argument("--icon", default=str(APP_ICON), help="安装包与快捷方式图标 (.ico)")
     args = parser.parse_args(argv)
 
     if sys.platform != "win32":
@@ -97,8 +99,14 @@ def main(argv: list[str] | None = None) -> int:
         f"/DVERSION={version}",
         f"/DSOURCE_DIR={source_dir}",
         f"/DOUT_FILE={out_file}",
-        str(NSI_SCRIPT),
     ]
+    icon_path = Path(args.icon) if args.icon else None
+    if icon_path is not None and not icon_path.is_file():
+        _emit(f"未找到图标文件: {icon_path}")
+        return 1
+    if icon_path is not None:
+        command.append(f"/DICON_FILE={icon_path}")
+    command.append(str(NSI_SCRIPT))
     _emit("执行: " + " ".join(command))
     result = subprocess.run(command, cwd=ROOT, check=False)
     if result.returncode != 0:

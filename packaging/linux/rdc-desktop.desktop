@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=RDC 远程桌面
+Name[en]=RDC Remote Desktop
+GenericName=远程桌面
+Comment=远程控制、屏幕共享与文件传输
+Exec=rdc-desktop %f
+TryExec=rdc-desktop
+Icon=rdc-desktop
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=rdc;remote;desktop;远程;
+StartupNotify=true

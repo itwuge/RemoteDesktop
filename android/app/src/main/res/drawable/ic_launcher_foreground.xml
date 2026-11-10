@@ -2,9 +2,9 @@
 <!--
   文件        : ic_launcher_foreground.xml
   所属目录    : android/app/src/main/res/drawable/
-  文件用途    : 应用图标前景: 深色屏幕 + 光标, 与连接页品牌标记保持一致
+  文件用途    : 应用图标前景: 显示器 + 双向箭头, 与桌面端图标同源 (方向 A)
   架构定位    : 资源层
-  职责边界    : 纯矢量图形, 不含逻辑
+  职责边界    : 纯矢量图形, 不含逻辑; 图形收在自适应图标安全区内
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -13,18 +13,25 @@
     android:viewportHeight="108">
     <!-- 显示器外框 -->
     <path
-        android:fillColor="#E7EDF6"
-        android:pathData="M26,30 L82,30 A5,5 0 0 1 87,35 L87,71 A5,5 0 0 1 82,76 L26,76 A5,5 0 0 1 21,71 L21,35 A5,5 0 0 1 26,30 Z" />
-    <!-- 屏幕 -->
-    <path
-        android:fillColor="#0B0E13"
-        android:pathData="M27,36 L81,36 L81,70 L27,70 Z" />
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="4.4"
+        android:pathData="M36,38 L72,38 A4,4 0 0 1 76,42 L76,60 A4,4 0 0 1 72,64 L36,64 A4,4 0 0 1 32,60 L32,42 A4,4 0 0 1 36,38 Z" />
     <!-- 底座 -->
     <path
-        android:fillColor="#E7EDF6"
-        android:pathData="M47,79 L61,79 L61,83 L47,83 Z" />
-    <!-- 光标 -->
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="4.4"
+        android:pathData="M54,64 L54,70 M44,72 L64,72" />
+    <!-- 双向连接箭头 -->
     <path
-        android:fillColor="#4D8DFF"
-        android:pathData="M46,44 L46,64 L51,59 L55,67 L59,65 L55,57 L62,57 Z" />
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="3.4"
+        android:pathData="M41,51 L67,51 M45,47 L41,51 L45,55 M63,47 L67,51 L63,55" />
 </vector>
