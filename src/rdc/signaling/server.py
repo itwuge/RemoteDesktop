@@ -28,6 +28,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from rdc.core.errors import (
@@ -43,6 +44,7 @@ from rdc.core.ids import iso_after, now_iso
 from rdc.core.logging import log_event
 from rdc.crypto.identity import DeviceIdentity, b64decode, b64encode, device_id_from_public_key, verify_signature
 from rdc.signaling.envelope import ProtocolError, build_envelope, validate_envelope, verify_envelope
+from rdc.signaling.grants import RelayGrantStore, RelayGrantStoreError
 from rdc.signaling.messages import ROUTED_TYPES, SERVER_TYPES, SESSION_PLANE_TYPES
 from rdc.signaling.session_plane import SessionPlaneTracker
 
@@ -180,6 +182,10 @@ class InMemorySignalingServer:
     wall_owner_of: Callable[[str], str | None] | None = None
     # 授予被回收时的外部通知: 中继服务据此立即断开数据面上使用该令牌的连接
     grant_revoked: Callable[[str], None] | None = None
+    # 跨进程授予表: 分进程部署时信令签发落库、中继进程按库回查; 未给出且非部署环境时保持纯内存
+    grant_store: RelayGrantStore | None = field(default=None, repr=False)
+    _grant_store_disabled: bool = field(default=False, repr=False)
+    _last_store_purge: float = field(default=0.0, repr=False)
     # 墙归属落库: 组装层注入账号库, 返回 (created/unchanged/conflict/unavailable, bound_at)
     wall_binder: Callable[[str, str, str], tuple[str, str]] | None = None
     # 墙到归属账号的本地登记, 供未接墙服务时显式建账
@@ -765,13 +771,16 @@ class InMemorySignalingServer:
         self._revoke_device_session_grants(session_id, self._current_device)
         profile = "L0" if granted >= 2000 else "L1" if granted >= 1200 else "L2" if granted >= 600 else "L3"
         relay_token = secrets.token_urlsafe(24)
-        # 令牌绑定会话、预算与过期时间, 数据面只认这份记录
-        self.relay_grants[relay_token] = RelayGrantRecord(
-            session_id=session_id,
-            budget_kbps=granted,
-            expires_at=now + self.control_grant_ttl_s,
-            device_id=self._current_device,
-            scope="control",
+        # 令牌绑定会话、预算与过期时间, 数据面只认这份记录; 同步落库供中继进程回查
+        self._remember_grant(
+            relay_token,
+            RelayGrantRecord(
+                session_id=session_id,
+                budget_kbps=granted,
+                expires_at=now + self.control_grant_ttl_s,
+                device_id=self._current_device,
+                scope="control",
+            ),
         )
         return [
             build_envelope(
@@ -857,11 +866,46 @@ class InMemorySignalingServer:
             state.last_activity = time.time()
         self._revoke_session_grants(session_id)
 
+    def _shared_store(self) -> RelayGrantStore | None:
+        """按需打开跨进程授予表; 只有部署环境给出库路径时才启用, 单进程测试保持纯内存."""
+        if self.grant_store is not None:
+            return self.grant_store
+        if self._grant_store_disabled:
+            return None
+        path = _shared_grant_database_path()
+        if path is None:
+            self._grant_store_disabled = True
+            return None
+        try:
+            self.grant_store = RelayGrantStore(path)
+        except RelayGrantStoreError as exc:
+            self._grant_store_disabled = True
+            log_event("relay", "grant_store_unavailable", level="WARNING", error=type(exc).__name__)
+            return None
+        return self.grant_store
+
+    def _remember_grant(self, token: str, record: RelayGrantRecord) -> None:
+        """记入内存并落库; 落库失败只降级为单进程可见, 不阻断签发."""
+        self.relay_grants[token] = record
+        store = self._shared_store()
+        if store is None:
+            return
+        try:
+            store.put(token, _grant_row(record))
+        except RelayGrantStoreError as exc:
+            log_event("relay", "grant_store_write_failed", level="WARNING", error=type(exc).__name__)
+
     def _drop_grant(self, token: str) -> None:
         """回收一个授予并通知外部; 调用方必须已持有 self._lock."""
         self.relay_grants.pop(token, None)
         if token == self.focus_token:
             self.focus_token = ""
+        store = self._shared_store()
+        if store is not None:
+            try:
+                store.delete(token)
+            except RelayGrantStoreError as exc:
+                log_event("relay", "grant_store_write_failed", level="WARNING", error=type(exc).__name__)
         if self.grant_revoked is not None:
             # 通知方只做断开动作, 不会回调本对象, 因此在锁内调用不会形成环
             self.grant_revoked(token)
@@ -870,12 +914,25 @@ class InMemorySignalingServer:
         for token, grant in list(self.relay_grants.items()):
             if grant.session_id == session_id:
                 self._drop_grant(token)
+        # 信令重启后内存里没有旧授予, 也要把库里同会话的行清掉, 避免会话结束后仍有残留令牌可放行
+        store = self._shared_store()
+        if store is not None:
+            try:
+                store.delete_session(session_id)
+            except RelayGrantStoreError as exc:
+                log_event("relay", "grant_store_write_failed", level="WARNING", error=type(exc).__name__)
 
     def _revoke_device_session_grants(self, session_id: str, device_id: str) -> None:
         """只吊销同设备同会话的旧控制令牌; 令牌绑定设备与会话, 不能误伤同会话对端."""
         for token, grant in list(self.relay_grants.items()):
             if grant.session_id == session_id and grant.device_id == device_id:
                 self._drop_grant(token)
+        store = self._shared_store()
+        if store is not None:
+            try:
+                store.delete_device_session(session_id, device_id)
+            except RelayGrantStoreError as exc:
+                log_event("relay", "grant_store_write_failed", level="WARNING", error=type(exc).__name__)
 
     def _session_is_alive(self, session_id: str) -> bool:
         """会话参与设备的传输连接都还在时才算占用名额.
@@ -936,6 +993,7 @@ class InMemorySignalingServer:
         for token, grant in list(self.relay_grants.items()):
             if grant.expires_at <= now:
                 self._drop_grant(token)
+        self._purge_store(now)
         for session_id, state in list(self.sessions.items()):
             if state.ended and now - state.last_activity > SESSION_RETENTION_S:
                 self.sessions.pop(session_id, None)
@@ -951,6 +1009,19 @@ class InMemorySignalingServer:
             if now - record.last_seen_at > PRESENCE_ONLINE_WINDOW_S:
                 # 90 秒未心跳只把在线状态改为离线, 不吊销令牌、不结束会话
                 self._notify_presence(device_id, PRESENCE_OFFLINE)
+
+    def _purge_store(self, now: float) -> None:
+        """同步清理共享表里的过期授予; 1 秒节流, 避免每条消息都写库."""
+        if now - self._last_store_purge < 1.0:
+            return
+        self._last_store_purge = now
+        store = self._shared_store()
+        if store is None:
+            return
+        try:
+            store.purge_expired(now)
+        except RelayGrantStoreError as exc:
+            log_event("relay", "grant_store_write_failed", level="WARNING", error=type(exc).__name__)
 
     # ---------------------------------------------------------------- 在线状态与统计
     def mark_online(self, device_id: str) -> None:
@@ -1021,10 +1092,27 @@ class InMemorySignalingServer:
         return token
 
     def resolve_relay_token(self, relay_token: str) -> RelayGrantRecord | None:
-        """按 relay_token 取授予记录; 过期或不存在返回 None."""
+        """按 relay_token 取授予记录; 过期或不存在返回 None.
+
+        本进程内存里没有时回查共享授予表: 分进程部署下信令与中继各自持有独立实例,
+        令牌由信令进程签发, 中继进程只能从库里拿到同一份授予.
+        """
         with self._lock:
             self._purge_expired()
-            return self.relay_grants.get(relay_token)
+            record = self.relay_grants.get(relay_token)
+            if record is not None:
+                return record
+            store = self._shared_store()
+            if store is None:
+                return None
+            try:
+                row = store.get(relay_token)
+            except RelayGrantStoreError as exc:
+                log_event("relay", "grant_store_read_failed", level="WARNING", error=type(exc).__name__)
+                return None
+            if row is None:
+                return None
+            return RelayGrantRecord(**row)
 
     # ---------------------------------------------------------------- 登出与吊销
     def kick_device(self, device_id: str) -> dict[str, int]:
@@ -1077,15 +1165,18 @@ class InMemorySignalingServer:
                 ):
                     self._drop_grant(token)
             token = secrets.token_urlsafe(24)
-            self.relay_grants[token] = RelayGrantRecord(
-                session_id=f"preview:{wall_id}:{cell}",
-                budget_kbps=min(self.preview_max_kbps, self.session_budget_kbps()),
-                expires_at=time.time() + ttl_s,
-                device_id=device_id,
-                scope="view",
-                wall_id=wall_id,
-                cell=cell,
-                account_id=account_id,
+            self._remember_grant(
+                token,
+                RelayGrantRecord(
+                    session_id=f"preview:{wall_id}:{cell}",
+                    budget_kbps=min(self.preview_max_kbps, self.session_budget_kbps()),
+                    expires_at=time.time() + ttl_s,
+                    device_id=device_id,
+                    scope="view",
+                    wall_id=wall_id,
+                    cell=cell,
+                    account_id=account_id,
+                ),
             )
             return token
 
@@ -1120,15 +1211,18 @@ class InMemorySignalingServer:
             if self.focus_token:
                 self._drop_grant(self.focus_token)
             token = secrets.token_urlsafe(24)
-            self.relay_grants[token] = RelayGrantRecord(
-                session_id=f"focus:{wall_id}:{cell}",
-                budget_kbps=self.session_budget_kbps(),
-                expires_at=time.time() + ttl_s,
-                device_id=device_id,
-                scope="focus",
-                wall_id=wall_id,
-                cell=cell,
-                account_id=account_id,
+            self._remember_grant(
+                token,
+                RelayGrantRecord(
+                    session_id=f"focus:{wall_id}:{cell}",
+                    budget_kbps=self.session_budget_kbps(),
+                    expires_at=time.time() + ttl_s,
+                    device_id=device_id,
+                    scope="focus",
+                    wall_id=wall_id,
+                    cell=cell,
+                    account_id=account_id,
+                ),
             )
             self.focus_token = token
             return token, ""
@@ -1157,6 +1251,12 @@ class InMemorySignalingServer:
                     removed += 1
             if self.focus_token and self.focus_token not in self.relay_grants:
                 self.focus_token = ""
+            store = self._shared_store()
+            if store is not None:
+                try:
+                    store.delete_wall(wall_id)
+                except RelayGrantStoreError as exc:
+                    log_event("relay", "grant_store_write_failed", level="WARNING", error=type(exc).__name__)
             return removed
 
     def focus_stats(self) -> dict[str, Any]:
@@ -1180,6 +1280,36 @@ class InMemorySignalingServer:
 
 # 参与会话生命周期统计的消息类型: 路由类消息加上预算申请与保活
 SESSION_TRACKED_TYPES: frozenset[str] = ROUTED_TYPES | SESSION_PLANE_TYPES | {"relay_allocate", "heartbeat"}
+
+# 共享授予表的库路径来源: 显式库路径优先, 其次由数据目录推导; 都没有时保持纯内存
+GRANT_DB_ENV = "RDC_ACCOUNTS_DB"
+GRANT_DATA_DIR_ENV = "RDC_DATA_DIR"
+
+
+def _grant_row(record: RelayGrantRecord) -> dict[str, Any]:
+    """把内存授予记录转成落库字段; 字段名与 RelayGrantStore 一致."""
+    return {
+        "session_id": record.session_id,
+        "device_id": record.device_id,
+        "budget_kbps": record.budget_kbps,
+        "expires_at": record.expires_at,
+        "scope": record.scope,
+        "wall_id": record.wall_id,
+        "cell": record.cell,
+        "account_id": record.account_id,
+    }
+
+
+def _shared_grant_database_path() -> Path | None:
+    """部署环境才启用共享授予表; 单进程与测试默认仍走内存, 行为不变."""
+    explicit = os.environ.get(GRANT_DB_ENV, "").strip()
+    if explicit:
+        return Path(explicit)
+    if not os.environ.get(GRANT_DATA_DIR_ENV, "").strip():
+        return None
+    from rdc.accounts.db import default_database_path
+
+    return default_database_path()
 
 
 def _wall_target(payload: dict[str, Any]) -> tuple[str, int, str]:

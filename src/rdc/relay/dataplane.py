@@ -21,6 +21,7 @@ role 取 publisher（被控端上行, 受预算限速）或 subscriber（控制�
 from __future__ import annotations
 
 import json
+import select
 import socket
 import struct
 import threading
@@ -299,6 +300,10 @@ class RelayDataPlane:
             if session.expires_at and time.time() > session.expires_at:
                 # 授予到期即断开, 不给过期令牌留下长期转发通道
                 return
+            # 空闲连接也要按固定间隔醒来复核授权: 跨进程吊销不会有人关闭本端套接字
+            readable, _, _ = select.select([connection], [], [], REVOCATION_CHECK_INTERVAL_S)
+            if not readable:
+                continue
             try:
                 payload = _recv_frame_limited(connection)
             except (OSError, ValueError):
