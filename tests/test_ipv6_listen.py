@@ -80,12 +80,13 @@ def _connect_once(family: socket.AddressFamily, host: str, port: int) -> None:
         client.connect((host, port))
 
 
-def _config(port: int, extra_ports: tuple[int, ...] = ()) -> RelayConfig:
+def _config(port: int, extra_ports: tuple[int, ...] = (), open_ports: tuple[int, ...] = ()) -> RelayConfig:
     """测试用中继配置: 空监听地址走双栈, 白名单只放行两侧回环."""
     return RelayConfig(
         bind="",
         port=port,
         extra_ports=extra_ports,
+        open_ports=open_ports,
         health_bind="127.0.0.1",
         health_port=0,
         relay_endpoint=f"relay://127.0.0.1:{port}",
@@ -519,12 +520,21 @@ def _hosts() -> tuple[int, int, int]:
     return ports[0], ports[1], ports[2]
 
 
+def _global_v6() -> str:
+    """取一个本机全局 IPv6 地址; 没有则跳过, 该环境无法验证按地址绑定."""
+    addresses = relay_module.local_global_ipv6_addresses()
+    if not addresses:
+        pytest.skip("当前环境没有全局 IPv6 地址, 无法验证额外端口按地址绑定")
+    return addresses[0]
+
+
 def test_relay_extra_ports_share_the_same_accept_logic():
-    """额外端口与主端口共用 accept: 两处都能把已登记的 e2e_hello 交给会话."""
+    """额外端口逐个绑全局 IPv6 地址: 该地址可接管直连, 回环不再可达."""
     if not _ipv6_available():
         pytest.skip("当前环境不支持 IPv6, 双栈监听无法验证")
+    address = _global_v6()
     main, extra, _unused = _hosts()
-    server = RelayServer(_config(main, extra_ports=(extra,)))
+    server = RelayServer(_config(main, extra_ports=(extra,), open_ports=(extra,)))
     received: dict[str, dict[str, object]] = {}
 
     def handler(session_id: str):
@@ -540,13 +550,16 @@ def test_relay_extra_ports_share_the_same_accept_logic():
     thread.start()
     try:
         assert _wait_until(lambda: server.listen_ports == (main, extra), 10.0), "额外端口未在 10 秒内监听"
-        for port, session_id in ((main, "s-main"), (extra, "s-extra")):
-            with socket.create_connection(("127.0.0.1", port), 5.0) as client:
+        for host, port, session_id in (("127.0.0.1", main, "s-main"), (address, extra, "s-extra")):
+            with socket.create_connection((host, port), 5.0) as client:
                 send_frame(client, {"kind": "e2e_hello", "session_id": session_id, "device_id": "d-1"})
                 assert _wait_until(lambda sid=session_id: sid in received, 5.0), f"{port} 端口未接管直连"
             assert received[session_id]["hello"]["session_id"] == session_id
             # 接管成功: 服务端不关闭该 socket, 所有权已转移
             assert received[session_id]["sock"].fileno() != -1
+        # 额外端口不绑通配与回环, 从 ::1 连不上
+        with pytest.raises(OSError):
+            _connect_once(socket.AF_INET6, "::1", extra)
     finally:
         for item in received.values():
             item["sock"].close()
@@ -555,17 +568,20 @@ def test_relay_extra_ports_share_the_same_accept_logic():
 
 
 def test_extra_listen_port_conflict_degrades_to_main(monkeypatch):
-    """额外端口被占用时只降级该端口并记 WARNING, 主端口照常监听."""
+    """额外端口在这些全局地址上全被占用时只降级该端口, 主端口照常监听."""
     if not _ipv6_available():
         pytest.skip("当前环境不支持 IPv6, 双栈监听无法验证")
+    _global_v6()
     main, extra, _unused = _hosts()
-    blocker = create_listener("", extra, 8)
+    blockers: list[socket.socket] = []
     events: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(
         relay_module,
         "log_event",
         lambda _module, event, **fields: events.append((event, fields)),
     )
+    for item in relay_module.local_global_ipv6_addresses():
+        blockers.append(create_listener(item, extra, 8))
     server = RelayServer(_config(main, extra_ports=(extra,)))
     thread = threading.Thread(target=server.serve_forever, name="relay-degrade-test", daemon=True)
     thread.start()
@@ -577,11 +593,37 @@ def test_extra_listen_port_conflict_degrades_to_main(monkeypatch):
     finally:
         server.stop()
         thread.join(timeout=5.0)
-        blocker.close()
+        for blocker in blockers:
+            blocker.close()
 
     failed = [fields for event, fields in events if event == "listen.extra_failed"]
     assert failed and failed[0]["port"] == extra
     assert failed[0]["level"] == "WARNING"
+
+
+def test_extra_port_rebinds_when_local_address_appears(monkeypatch):
+    """本机全局地址出现后, 额外端口在刷新周期内自动补绑."""
+    if not _ipv6_available():
+        pytest.skip("当前环境不支持 IPv6, 双栈监听无法验证")
+    address = _global_v6()
+    main, extra, _unused = _hosts()
+    monkeypatch.setattr(relay_module, "EXTRA_PORT_REFRESH_S", 0.2)
+    state = {"addresses": []}
+    server = RelayServer(
+        _config(main, extra_ports=(extra,), open_ports=(extra,)),
+        extra_bind_addresses=lambda: list(state["addresses"]),
+    )
+    thread = threading.Thread(target=server.serve_forever, name="relay-extra-rebind-test", daemon=True)
+    thread.start()
+    try:
+        assert _wait_until(lambda: server.listen_ports == (main,), 10.0)
+        state["addresses"] = [address]
+        assert _wait_until(lambda: server.listen_ports == (main, extra), 10.0), "地址出现后未重绑"
+        with socket.create_connection((address, extra), 5.0):
+            pass
+    finally:
+        server.stop()
+        thread.join(timeout=5.0)
 
 
 def test_answer_candidates_expand_one_v6_host_per_listen_port(monkeypatch):

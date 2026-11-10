@@ -128,7 +128,7 @@ class RelayConfig:
     max_sessions: int
     degrade_profile: str
     dataplane_enabled: bool = True
-    # 额外监听端口: 与主端口共用同一套 accept 逻辑; 单个端口绑定失败只降级该端口
+    # 额外监听端口: 逐个绑本机全局 IPv6 地址, 与主端口共用同一套 accept 逻辑
     extra_ports: tuple[int, ...] = ()
     # 对外开放来源的端口: 仅供 WAN 入站使用; 只放宽来源白名单, 不放宽认证与连接码
     open_ports: tuple[int, ...] = ()
@@ -336,8 +336,14 @@ def create_listener(bind: str, port: int, backlog: int) -> socket.socket:
     一致, 同一端口同时接受 IPv4 与 IPv6 连接.
     """
     target = bind.strip()
-    listener = socket.socket(socket.AF_INET6 if target in DUAL_STACK_BINDS else socket.AF_INET, socket.SOCK_STREAM)
-    address = "::" if target in DUAL_STACK_BINDS else target
+    if target in DUAL_STACK_BINDS:
+        family, address = socket.AF_INET6, "::"
+    elif ":" in target:
+        # 显式 IPv6 地址(额外端口逐地址绑定)必须用 AF_INET6 单栈
+        family, address = socket.AF_INET6, target
+    else:
+        family, address = socket.AF_INET, target
+    listener = socket.socket(family, socket.SOCK_STREAM)
     try:
         claim_port_exclusively(listener)
         if listener.family == socket.AF_INET6:
@@ -348,6 +354,32 @@ def create_listener(bind: str, port: int, backlog: int) -> socket.socket:
         listener.close()
         raise
     return listener
+
+
+# 额外端口地址刷新周期: 本机地址变化(临时地址轮换、网络切换)后自动重绑
+EXTRA_PORT_REFRESH_S = 30.0
+
+
+def local_global_ipv6_addresses() -> list[str]:
+    """返回可用于额外端口绑定的本机全局 IPv6 地址, 去重保序.
+
+    额外端口逐个绑全局地址, 不绑通配 ``::``、回环 ``::1``、fe80 链路本地
+    与 ULA, 这样 443 可与只监听 ``127.0.0.1``/``::1`` 的本机软件共存.
+    """
+    found: list[str] = []
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        return found
+    for info in infos:
+        text = str(info[4][0]).split("%", 1)[0]
+        try:
+            address = ipaddress.IPv6Address(text)
+        except ValueError:
+            continue
+        if address.is_global and str(address) not in found:
+            found.append(str(address))
+    return found
 
 
 def _section_text(parser: configparser.ConfigParser, section: str, key: str) -> str:
@@ -653,6 +685,7 @@ class RelayServer:
         wall_binder: Callable[[str, str, str], tuple[str, str]] | None = None,
         revocation_probe: AccountRevocationProbe | None = None,
         account_center: AccountCenter | None = None,
+        extra_bind_addresses: Callable[[], list[str]] | None = None,
     ) -> None:
         self.config = config
         # 跨端账号中心: 与信令共用同一条 TLS 监听, 不新增端口
@@ -719,6 +752,13 @@ class RelayServer:
         # 主端口与额外端口共用同一套 accept 逻辑, 这里保存实际绑定成功的监听 socket
         self._listeners: list[tuple[int, socket.socket]] = []
         self.listen_ports: tuple[int, ...] = ()
+        # 额外端口只绑本机全局 IPv6 地址: 地址集合可注入, 便于测试与本机地址变化后重绑
+        self._extra_bind_addresses = extra_bind_addresses or local_global_ipv6_addresses
+        self._extra_lock = threading.Lock()
+        self._extra_bound: dict[tuple[int, str], socket.socket] = {}
+        self._extra_failed: set[tuple[int, str]] = set()
+        self._extra_refresh_s = EXTRA_PORT_REFRESH_S
+        self._extra_thread: threading.Thread | None = None
 
     def register_direct(
         self,
@@ -744,7 +784,7 @@ class RelayServer:
         self._listener.settimeout(1.0)
         self._listeners = [(self.config.port, self._listener)]
         self._bind_extra_listeners(backlog)
-        self.listen_ports = tuple(port for port, _listener in self._listeners)
+        self.listen_ports = self._listening_ports()
         self._started = time.monotonic()
         # 定时清理与是否有入站消息无关: 客户端被强杀后也能按周期回收名额
         self.signaling.start_maintenance()
@@ -769,29 +809,91 @@ class RelayServer:
                 name=f"accept-{port}",
                 daemon=True,
             ).start()
+        # 本机地址变化(临时地址轮换、网络切换)后自动重绑额外端口, 不依赖入站消息
+        self._extra_thread = threading.Thread(
+            target=self._refresh_loop,
+            args=(backlog,),
+            name="listen-refresh",
+            daemon=True,
+        )
+        self._extra_thread.start()
         self._stop.wait()
         self._shutdown()
         log_event("relay.server", "service.stopped")
 
     def _bind_extra_listeners(self, backlog: int) -> None:
-        """按配置额外监听端口; 单个端口失败只降级该端口并记 WARNING, 不影响主端口."""
+        """按配置绑定额外端口: 逐个本机全局 IPv6 地址绑定, 不占通配与回环.
+
+        单个地址失败只降级该地址并记 WARNING, 不影响主端口与其它地址;
+        监听集合随本机地址变化由 :meth:`_refresh_loop` 周期对齐.
+        """
+        self._refresh_extra_listeners(backlog)
+
+    def _listening_ports(self) -> tuple[int, ...]:
+        """实际监听端口, 主端口在前, 额外端口按绑定顺序去重."""
+        ports: list[int] = []
+        for port, _listener in self._listeners:
+            if port not in ports:
+                ports.append(port)
+        return tuple(ports)
+
+    def _refresh_extra_listeners(self, backlog: int) -> list[tuple[int, socket.socket]]:
+        """把额外端口监听集合对齐到当前本机地址, 返回本次新增的监听 socket."""
+        desired: list[tuple[int, str]] = []
         for port in self.config.extra_ports:
             if port == self.config.port:
                 continue
-            try:
-                listener = create_listener(self.config.bind, port, backlog)
-            except OSError as error:
-                log_event(
-                    "relay.server",
-                    "listen.extra_failed",
-                    level="WARNING",
-                    port=port,
-                    error=type(error).__name__,
-                )
-                continue
-            listener.settimeout(1.0)
-            self._listeners.append((port, listener))
-            log_event("relay.server", "listen.extra_ready", port=port)
+            for address in self._extra_bind_addresses():
+                key = (port, address)
+                if key not in desired:
+                    desired.append(key)
+        desired_set = set(desired)
+        created: list[tuple[int, socket.socket]] = []
+        with self._extra_lock:
+            for key in [item for item in self._extra_bound if item not in desired_set]:
+                listener = self._extra_bound.pop(key)
+                self._listeners = [(port, sock) for port, sock in self._listeners if sock is not listener]
+                with suppress(OSError):
+                    listener.close()
+                log_event("relay.server", "listen.extra_closed", port=key[0], address=key[1])
+            # 只保留仍然期望的失败记录, 恢复后再失败会重新记 WARNING
+            self._extra_failed &= desired_set
+            for port, address in desired:
+                key = (port, address)
+                if key in self._extra_bound or key in self._extra_failed:
+                    continue
+                try:
+                    listener = create_listener(address, port, backlog)
+                except OSError as error:
+                    self._extra_failed.add(key)
+                    log_event(
+                        "relay.server",
+                        "listen.extra_failed",
+                        level="WARNING",
+                        port=port,
+                        address=address,
+                        error=type(error).__name__,
+                    )
+                    continue
+                listener.settimeout(1.0)
+                self._extra_bound[key] = listener
+                self._listeners.append((port, listener))
+                created.append((port, listener))
+                log_event("relay.server", "listen.extra_ready", port=port, address=address)
+        return created
+
+    def _refresh_loop(self, backlog: int) -> None:
+        """周期检查本机地址, 地址新增时补绑、地址消失时释放对应监听."""
+        while not self._stop.wait(self._extra_refresh_s):
+            created = self._refresh_extra_listeners(backlog)
+            for port, listener in created:
+                threading.Thread(
+                    target=self._accept_loop,
+                    args=(listener, port),
+                    name=f"accept-{port}",
+                    daemon=True,
+                ).start()
+            self.listen_ports = self._listening_ports()
 
     def _accept_loop(self, listener: socket.socket, port: int) -> None:
         """统一 accept 循环: 主端口与额外端口共用同一套准入与首帧分流."""
@@ -1256,6 +1358,8 @@ class RelayServer:
             with suppress(OSError):
                 listener.close()
         self._listeners = []
+        self._extra_bound.clear()
+        self._extra_failed.clear()
         self._listener = None
         if self._health is not None:
             self._health.shutdown()
