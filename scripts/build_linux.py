@@ -14,8 +14,8 @@
     python3 scripts/build_linux.py --build-root /home/wuge/rdc-build --skip-build
 
 前置条件: 当前 Python 具备 PyInstaller 与 PySide6, 系统具备 dpkg-deb.
-产物: <构建根>/artifacts/desktop/rdc-desktop-<版本>-linux-x64.deb
-      <构建根>/artifacts/desktop/rdc-desktop-<版本>-linux-x64-portable.tar.gz
+产物: <构建根>/artifacts/desktop/rdc-desktop-<版本>-linux-<arch>.deb
+      <构建根>/artifacts/desktop/rdc-desktop-<版本>-linux-<arch>-portable.tar.gz
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,7 @@ ICON_ROOT = PROJECT_ROOT / "packaging" / "linux" / "icons" / "hicolor"
 DESKTOP_ENTRY = PROJECT_ROOT / "packaging" / "linux" / "rdc-desktop.desktop"
 APP_ICON = ICON_ROOT / "256x256" / "apps" / "rdc-desktop.png"
 PORTABLE_CONFIG = '{\n  "update_source": ""\n}\n'
+DEB_ARCHES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 DEB_DEPENDS = (
     "libc6, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, "
     "libxcb-render-util0, libxcb-shape0, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, "
@@ -52,11 +54,11 @@ def _emit(text: str = "") -> None:
     sys.stdout.flush()
 
 
-def _version_info() -> tuple[str, str]:
+def _version_info() -> tuple[str, str, str]:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
-    from rdc.version import __version__, artifact_basename
+    from rdc.version import __version__, artifact_basename, platform_tag
 
-    return __version__, artifact_basename()
+    return __version__, artifact_basename(), platform_tag()
 
 
 def _sha256(path: Path) -> str:
@@ -132,13 +134,18 @@ def _tar_portable(source_dir: Path, tar_path: Path, top_name: str) -> int:
     return sum(1 for item in source_dir.rglob("*") if item.is_file())
 
 
-def _control_file(version: str, installed_kb: int) -> str:
+def _deb_arch() -> str:
+    machine = (platform.machine() or "").lower()
+    return DEB_ARCHES.get(machine, machine or "amd64")
+
+
+def _control_file(version: str, installed_kb: int, deb_arch: str) -> str:
     return (
         f"Package: {PACKAGE_NAME}\n"
         f"Version: {version}\n"
         "Section: net\n"
         "Priority: optional\n"
-        "Architecture: amd64\n"
+        f"Architecture: {deb_arch}\n"
         "Maintainer: RDC <rdc@example.invalid>\n"
         f"Installed-Size: {installed_kb}\n"
         f"Depends: {DEB_DEPENDS}\n"
@@ -170,7 +177,7 @@ def _assemble_deb(dist_app: Path, deb_root: Path, version: str) -> None:
     installed_kb = sum(item.stat().st_size for item in app_target.rglob("*") if item.is_file()) // 1024
     control = deb_root / "DEBIAN"
     control.mkdir(parents=True, exist_ok=True)
-    (control / "control").write_text(_control_file(version, installed_kb), encoding="utf-8", newline="\n")
+    (control / "control").write_text(_control_file(version, installed_kb, _deb_arch()), encoding="utf-8", newline="\n")
 
 
 def _build_deb(deb_root: Path, deb_path: Path) -> int:
@@ -191,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     if not sys.platform.startswith("linux"):
         _emit("Linux 包只能在 Linux 上构建")
         return 1
-    version, basename = _version_info()
+    version, basename, tag = _version_info()
     build_root = Path(args.build_root)
     stage = build_root / "build" / "desktop"
     dist_dir = stage / "dist"
@@ -216,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     summary: dict[str, object] = {
         "version": version,
         "artifact": basename,
-        "platform": "linux-x64",
+        "platform": tag,
         "built_at": datetime.now().isoformat(timespec="seconds"),
         "python": sys.version.split()[0],
         "console": "无控制台 (PyInstaller --windowed)",
@@ -244,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.only in ("all", "deb"):
         deb_path = artifacts / f"{basename}.deb"
-        deb_root = stage / "deb" / f"{PACKAGE_NAME}_{version}_amd64"
+        deb_root = stage / "deb" / f"{PACKAGE_NAME}_{version}_{_deb_arch()}"
         _assemble_deb(dist_app, deb_root, version)
         code = _build_deb(deb_root, deb_path)
         if code != 0:
@@ -259,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     _emit("")
-    _emit(f"版本: {version} (linux-x64)")
+    _emit(f"版本: {version} ({tag})")
     _emit(f"产物目录: {artifacts}")
     return 0
 
