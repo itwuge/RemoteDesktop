@@ -10,9 +10,13 @@ on:
         description: "要构建的 tag 或分支, 留空用当前 ref"
         required: false
         default: ""
+      release_tag:
+        description: "把产物上传到该 Release tag, 留空则只存 artifact"
+        required: false
+        default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -64,3 +68,14 @@ jobs:
             rdc-build/artifacts/desktop/*.tar.gz
             rdc-build/artifacts/desktop/*.tar.gz.sha256
             rdc-build/artifacts/desktop/linux-build-info.json
+
+      - name: 上传到 Release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            rdc-build/artifacts/desktop/*.deb \
+            rdc-build/artifacts/desktop/*.tar.gz \
+            --repo "${{ github.repository }}" --clobber
