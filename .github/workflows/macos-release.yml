@@ -40,7 +40,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
-      RDC_BUILD_ROOT: ${{ runner.temp }}/rdc-build
+      RDC_BUILD_ROOT: ${{ github.workspace }}/rdc-build
     strategy:
       fail-fast: false
       matrix:
