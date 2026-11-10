@@ -46,7 +46,8 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
+            # macos-14 在本仓库不可用; macos-15 同为 Apple Silicon, 产出 macos-arm64
+            runner: macos-15
           # macos-13(Intel) 已退役, 用官方接棒的 macos-15-intel 出 x86_64 包
           - arch: x64
             runner: macos-15-intel
