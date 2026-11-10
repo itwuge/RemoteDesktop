@@ -98,7 +98,12 @@ class LiveEncoder:
         if self.context is None:
             raise RuntimeError("编码器尚未打开")
         started = time.perf_counter()
-        frame = av.VideoFrame.from_ndarray(image, format="bgra").reformat(format="yuv420p")
+        frame = av.VideoFrame.from_ndarray(image, format="bgra")
+        if frame.width != self.width or frame.height != self.height:
+            # 采集分辨率高于目标档位时在编码前缩放, 避免编码器尺寸不匹配
+            frame = frame.reformat(width=self.width, height=self.height, format="yuv420p")
+        else:
+            frame = frame.reformat(format="yuv420p")
         frame.pts = pts
         packets = [(bytes(packet), bool(packet.is_keyframe)) for packet in self.context.encode(frame)]
         self.encode_ms.append((time.perf_counter() - started) * 1000.0)
@@ -285,7 +290,7 @@ def run(arguments: argparse.Namespace) -> int:
         allocated_payload = allocated.get("payload", {})
         relay_token = str(allocated_payload.get("relay_token", ""))
         relay_socket = relay_connect(arguments.host, arguments.port, relay_token, session_id, "publisher")
-        session = host_handshake(relay_socket, identity)
+        session = host_handshake(relay_socket, identity, session_id, str(offer_payload.get("from_device_id", "")))
         channel = AeadChannel(relay_socket, session)
         _emit(f"被控端已接入中继数据面: {arguments.host}:{arguments.port}")
 

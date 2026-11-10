@@ -1,0 +1,300 @@
+{
+  "meta": {
+    "name": "RDC 远程桌面 · 界面令牌 v2（现行基准）",
+    "version": "2.0.0",
+    "updated": "2026-11-10",
+    "baseline": "ui-v2",
+    "status": "现行唯一基准；ui-v1 目录只读保留，不再取值",
+    "authority": "以 docs/design/ui-v2/桌面原型.html 与 docs/design/ui-v2/安卓原型.html 的 :root / body.light 变量为准",
+    "supersedes": [
+      "docs/design/ui-v1/登录后界面-v2.html",
+      "docs/design/ui-v1/安卓端界面-v1.html",
+      "docs/design/ui-v1/design-tokens.json"
+    ],
+    "versionRule": "任何 UI 改版新建 ui-v3、ui-v4 目录，旧目录只读不改；每个版本目录必须自带原型、说明、令牌与上一版功能对照表",
+    "tokenCount": 208,
+    "consumers": {
+      "android": "android/res/values/colors.xml、dimens.xml、font sizes(styles.xml / sp)",
+      "desktop": "src/rdc/ui/theme.py 的 DARK / LIGHT 色板与 QSS 数值"
+    },
+    "unit": {
+      "css": "px (原型按 1x 设计稿标注)",
+      "android": "dp 用于尺寸, sp 用于字号; 1px 按 1dp 映射, 字号按同值 sp",
+      "desktop": "px (Qt 逻辑像素)"
+    },
+    "platformSpecificNote": "带 platform 字段的条目只在对应端生效; 未标注的条目两端共用, 不允许各自改值."
+  },
+  "colors": {
+    "shared": {
+      "dark": {
+        "bg": "#0b0e13",
+        "panel": "#121820",
+        "panel2": "#0f141b",
+        "panel3": "#1a212b",
+        "card": "#141a23",
+        "input": "#0e131a",
+        "hover": "#1a222d",
+        "line": "#222b37",
+        "lineStrong": "#2e3947",
+        "text": "#e7edf6",
+        "muted": "#8b98aa",
+        "faint": "#5e6b7d",
+        "accent": "#4d8dff",
+        "accentHover": "#679eff",
+        "accentStrong": "#9dc0ff",
+        "accentSoft": "rgba(77,141,255,0.14)",
+        "ok": "#3fc996",
+        "okSoft": "rgba(63,201,150,0.12)",
+        "okBorder": "rgba(63,201,150,0.32)",
+        "warn": "#e0a955",
+        "warnSoft": "rgba(224,169,85,0.13)",
+        "warnBorder": "rgba(224,169,85,0.32)",
+        "danger": "#ea6a6a",
+        "dangerSoft": "rgba(234,106,106,0.12)",
+        "dangerBorder": "rgba(234,106,106,0.32)",
+        "brandFrom": "#5b97ff",
+        "brandTo": "#2f63d8",
+        "mediaText": "#c7d2e0",
+        "mediaTextStrong": "#9fb0c6",
+        "mediaFill": "rgba(255,255,255,0.06)",
+        "mediaFillStrong": "rgba(255,255,255,0.08)",
+        "mediaLine": "rgba(255,255,255,0.14)"
+      },
+      "light": {
+        "bg": "#eef1f6",
+        "panel": "#ffffff",
+        "panel2": "#f5f7fa",
+        "panel3": "#eef2f7",
+        "card": "#ffffff",
+        "input": "#fbfcfe",
+        "hover": "#eef2f8",
+        "line": "#dfe5ed",
+        "lineStrong": "#cbd4df",
+        "text": "#1d2733",
+        "muted": "#5f6d7e",
+        "faint": "#8c98a6",
+        "accent": "#2f6fe0",
+        "accentHover": "#245fc8",
+        "accentStrong": "#1f57b8",
+        "accentSoft": "rgba(47,111,224,0.10)",
+        "ok": "#16865f",
+        "okSoft": "rgba(22,134,95,0.10)",
+        "okBorder": "rgba(22,134,95,0.28)",
+        "warn": "#a76b12",
+        "warnSoft": "rgba(167,107,18,0.10)",
+        "warnBorder": "rgba(167,107,18,0.28)",
+        "danger": "#c54545",
+        "dangerSoft": "rgba(197,69,69,0.09)",
+        "dangerBorder": "rgba(197,69,69,0.28)",
+        "brandFrom": "#5b97ff",
+        "brandTo": "#2f63d8",
+        "mediaText": "#c7d2e0",
+        "mediaTextStrong": "#9fb0c6",
+        "mediaFill": "rgba(255,255,255,0.06)",
+        "mediaFillStrong": "rgba(255,255,255,0.08)",
+        "mediaLine": "rgba(255,255,255,0.14)"
+      },
+      "usage": {
+        "bg": "页面最底层背景",
+        "panel": "侧栏 / 手机应用区",
+        "panel2": "工具栏、状态条、底部导航、次级面板",
+        "panel3": "悬浮层、分段控件选中、卡片 hover",
+        "card": "卡片与输入区之外的容器",
+        "input": "输入框、进度条槽",
+        "hover": "通用的悬停底色",
+        "line": "常规分隔线 / 卡片描边",
+        "lineStrong": "强调描边、控件边框、滚动条滑块",
+        "text": "正文与标题",
+        "muted": "说明文字、次要信息",
+        "faint": "占位、禁用、极弱提示",
+        "accent": "主色: 主按钮、选中态、链接",
+        "accentHover": "主色悬停",
+        "accentStrong": "主色在深色底上的提亮文字",
+        "accentSoft": "主色淡底(选中行、徽标底色)",
+        "ok": "成功 / 在线 / 受信",
+        "warn": "警告 / 待处理",
+        "danger": "失败 / 危险操作 / 未读徽标",
+        "brandFrom": "品牌标记渐变起点",
+        "brandTo": "品牌标记渐变终点",
+        "mediaText": "远程画面覆盖层上的浅色文字与图标",
+        "mediaTextStrong": "远程画面覆盖层上的次强文字",
+        "mediaFill": "远程画面覆盖层的弱填充",
+        "mediaFillStrong": "远程画面覆盖层的强填充",
+        "mediaLine": "远程画面覆盖层的描边"
+      }
+    },
+    "desktopExtended": {
+      "note": "桌面实现需要而原型未单列的派生色; 值由共用主色推导, 只允许桌面使用",
+      "dark": {
+        "accentSoftWeak": "rgba(77,141,255,0.07)",
+        "accentBorder": "rgba(77,141,255,0.34)",
+        "accentBorderSoft": "rgba(77,141,255,0.22)",
+        "heroFrom": "#16325a",
+        "heroTo": "#0d1725",
+        "thumbFrom": "#1b2c42",
+        "thumbTo": "#0c1622",
+        "white": "#ffffff",
+        "shadow": "#02060c"
+      },
+      "light": {
+        "accentSoftWeak": "rgba(47,111,224,0.06)",
+        "accentBorder": "rgba(47,111,224,0.34)",
+        "accentBorderSoft": "rgba(47,111,224,0.22)",
+        "heroFrom": "#dbe8ff",
+        "heroTo": "#f2f6fd",
+        "thumbFrom": "#dce6f4",
+        "thumbTo": "#eef3fa",
+        "white": "#ffffff",
+        "shadow": "#b8c5d6"
+      }
+    },
+    "brandMark": {
+      "note": "品牌标记与应用程序图标; 深浅色共用同一组值, 不随主题变化",
+      "from": "#5b97ff",
+      "to": "#2f63d8",
+      "plateTop": "#6fa8ff",
+      "plateBottom": "#3b7bf6",
+      "plateEdge": "#1f55cc",
+      "markDeep": "#1b4099",
+      "glyph": "#ffffff"
+    }
+  },
+  "typography": {
+    "fontFamily": {
+      "ui": "system-ui, 'Microsoft YaHei UI', 'PingFang SC', 'Noto Sans SC', sans-serif",
+      "mono": "ui-monospace, 'Cascadia Mono', Consolas, 'Liberation Mono', monospace",
+      "androidUi": "sans-serif (系统默认, 中文回退 Noto Sans SC)",
+      "androidMono": "monospace"
+    },
+    "weight": {
+      "regular": 400,
+      "medium": 500,
+      "semiBold": 600,
+      "bold": 700
+    },
+    "scale": {
+      "micro": 9,
+      "eyebrow": 9.5,
+      "tiny": 10,
+      "caption": 10.5,
+      "meta": 11,
+      "bodySmall": 11.5,
+      "body": 12,
+      "bodyStrong": 12.5,
+      "subhead": 13,
+      "headline": 15,
+      "title": 17,
+      "pageTitle": 20,
+      "hero": 20,
+      "metric": 22,
+      "code": 28
+    },
+    "lineHeight": {
+      "tight": 1.25,
+      "normal": 1.55,
+      "relaxed": 1.7
+    },
+    "letterSpacing": {
+      "section": "0.14em",
+      "eyebrow": "0.06em",
+      "code": "0.16em"
+    }
+  },
+  "spacing": {
+    "ladder": [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 26],
+    "roles": {
+      "hairline": 2,
+      "inline": 6,
+      "fieldGap": 8,
+      "cardGap": 10,
+      "sectionGap": 12,
+      "pageGap": 14,
+      "pagePadding": 20,
+      "pagePaddingWide": 26
+    }
+  },
+  "radius": {
+    "xs": 5,
+    "sm": 6,
+    "md": 7,
+    "control": 8,
+    "chip": 12,
+    "card": 13,
+    "panel": 14,
+    "hero": 18,
+    "pill": 999,
+    "circle": "50%"
+  },
+  "borderWidth": {
+    "hairline": 1,
+    "focus": 2,
+    "selected": 2,
+    "dashed": 1
+  },
+  "shadow": {
+    "desktopWindow": "0 30px 90px rgba(0,0,0,0.55)",
+    "desktopCard": "0 1px 2px rgba(0,0,0,0.22)",
+    "desktopWindowLight": "0 24px 70px rgba(38,52,72,0.16)",
+    "desktopCardLight": "0 1px 2px rgba(38,52,72,0.06)",
+    "androidSystem": "由系统 elevation 提供, 原型不叠加自定义阴影"
+  },
+  "iconSize": {
+    "inline": 14,
+    "body": 16,
+    "nav": 15,
+    "brandMark": 30,
+    "androidTab": 20,
+    "androidHeader": 18,
+    "desktopCopy": 14
+  },
+  "controlHeight": {
+    "desktop": {
+      "button": 32,
+      "buttonSmall": 27,
+      "input": 31,
+      "sidebarNav": 34,
+      "copyButton": 26,
+      "chip": 27
+    },
+    "android": {
+      "button": 32,
+      "buttonSmall": 27,
+      "iconButton": 28,
+      "iconButtonLarge": 34,
+      "chip": 27,
+      "segmentItem": 26
+    }
+  },
+  "navigation": {
+    "desktopSidebarWidth": 216,
+    "desktopSidebarCollapsed": 64,
+    "desktopSidebarPadding": "15 11",
+    "desktopNavItemRadius": 7,
+    "desktopTopbarHeight": 58,
+    "androidStatusBarHeight": 30,
+    "androidStatusBarHeightLandscape": 22,
+    "androidTabBarHeight": 60,
+    "androidTabBarHeightLandscape": 52,
+    "androidHomeBarHeight": 16,
+    "androidPagePadding": 16,
+    "androidPagePaddingLandscape": 22,
+    "androidPortraitWidth": 390,
+    "androidPortraitHeight": 844,
+    "androidLandscapeWidth": 804,
+    "androidLandscapeHeight": 392
+  },
+  "platformSpecific": {
+    "android": {
+      "statusBarInset": "30dp 竖屏 / 22dp 横屏; 由系统状态栏实际高度覆盖, 原型值仅用于预览",
+      "safeAreaBottom": "16dp 手势条区域; 内容滚动区底部需额外避让",
+      "navigationMode": "底部四页签: 首页 / 设备 / 消息 / 我的",
+      "densityUnit": "dp + sp"
+    },
+    "desktop": {
+      "statusBarInset": "无系统状态栏; 状态栏为窗口内 QStatusBar, 高 24px",
+      "safeAreaBottom": "无; 窗口可自由缩放, 最小 1080x720",
+      "navigationMode": "左侧固定侧栏 216px",
+      "densityUnit": "px (Qt 逻辑像素)"
+    }
+  }
+}

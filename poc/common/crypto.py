@@ -29,6 +29,9 @@ from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 ENVELOPE_VERSION = 1
+RECV_REPLAY_WINDOW = 64
+RECV_REPLAY_MASK = (1 << RECV_REPLAY_WINDOW) - 1
+HKDF_INFO_PREFIX = b"rdc-poc-v1"
 
 
 def base64_encode(data: bytes) -> str:
@@ -96,6 +99,7 @@ def device_id_from_public_key(public_key: bytes) -> str:
 
 
 # ================================ DeviceIdentity ================================
+
 
 class DeviceIdentity:
     """PoC 设备身份, 持有 Ed25519 密钥对并负责消息签名与验签.
@@ -199,6 +203,7 @@ def verify_envelope(public_key_b64: str, envelope: dict[str, Any]) -> bool:
 
 # ================================ EphemeralKeyPair ================================
 
+
 class EphemeralKeyPair:
     """X25519 临时密钥对, 用于会话密钥协商.
 
@@ -244,19 +249,21 @@ class EphemeralKeyPair:
 
 # ================================ AeadSession ================================
 
+
 class AeadSession:
     """基于 ChaCha20-Poly1305 的双向会话加解密器.
 
     工作流程:
         1. 由协商出的密钥分别创建发送与接收 cipher.
         2. 每次加密使用 4 字节随机前缀加 8 字节单调计数器组成 12 字节 nonce.
-        3. 对端按相同规则解密, 计数不一致即失败.
+        3. 接收端按 64 位滑动窗口登记计数器: 同一密文重复到达直接拒绝,
+           落后窗口的计数器视为越界并断链; 窗口内乱序仍可容忍, 适配 UDP 传输.
 
     实例属性清单:
         send_key (bytes): 本端发送密钥.
         recv_key (bytes): 本端接收密钥.
         send_counter (int): 发送计数器, 只增不减.
-        recv_counter (int): 接收计数器.
+        recv_counter (int): 已接受的接收帧数量.
 
     构造参数:
         :param send_key: 32 字节发送密钥
@@ -277,6 +284,8 @@ class AeadSession:
         self._recv_cipher = ChaCha20Poly1305(recv_key)
         self._send_prefix = os.urandom(4)
         self._recv_prefix: bytes | None = None
+        self._recv_highest = -1
+        self._recv_bitmap = 0
 
     def encrypt(self, payload: bytes) -> bytes:
         """加密一段载荷, 输出前缀加计数器加密文.
@@ -293,13 +302,13 @@ class AeadSession:
         return self._send_prefix + counter + ciphertext
 
     def decrypt(self, data: bytes) -> bytes:
-        """解密一段载荷.
+        """解密一段载荷, 并拒绝重放与越界计数器.
 
         :param data: encrypt() 输出的字节
         :type data: bytes
         :return: 明文载荷
         :rtype: bytes
-        :raises ValueError: 长度不足、前缀变化或认证失败时抛出
+        :raises ValueError: 长度不足、前缀变化、重放、计数器越界或认证失败时抛出
         """
         if len(data) < 12:
             raise ValueError("密文长度不足")
@@ -309,14 +318,52 @@ class AeadSession:
             self._recv_prefix = prefix
         elif prefix != self._recv_prefix:
             raise ValueError("nonce 前缀与首包不一致")
+        counter_value = int.from_bytes(counter, "big")
+        self._check_counter(counter_value)
         nonce = prefix + counter
         plaintext = self._recv_cipher.decrypt(nonce, data[12:], None)
+        self._commit_counter(counter_value)
         self.recv_counter += 1
         return plaintext
 
+    def _check_counter(self, counter_value: int) -> None:
+        """在任何认证动作之前检查计数器是否已接收或已滑出窗口."""
+        if self._recv_highest < 0:
+            return
+        if counter_value > self._recv_highest:
+            return
+        distance = self._recv_highest - counter_value
+        if distance >= RECV_REPLAY_WINDOW:
+            raise ValueError("计数器落后接收窗口, 已断开")
+        if (self._recv_bitmap >> distance) & 1:
+            raise ValueError("检测到重放的密文帧")
 
-def derive_aead_session(shared_secret: bytes, salt: bytes, initiator: bool) -> AeadSession:
+    def _commit_counter(self, counter_value: int) -> None:
+        """认证通过后登记计数器, 供后续帧去重."""
+        if self._recv_highest < 0:
+            self._recv_highest = counter_value
+            self._recv_bitmap = 1
+            return
+        if counter_value > self._recv_highest:
+            shift = counter_value - self._recv_highest
+            self._recv_bitmap = (self._recv_bitmap << shift) & RECV_REPLAY_MASK
+            self._recv_bitmap |= 1
+            self._recv_highest = counter_value
+            return
+        self._recv_bitmap |= 1 << (self._recv_highest - counter_value)
+
+
+def derive_aead_session(
+    shared_secret: bytes,
+    salt: bytes,
+    initiator: bool,
+    *,
+    context: bytes = b"",
+) -> AeadSession:
     """由共享密钥派生双向 AEAD 会话.
+
+    ``context`` 用于把会话号与双方设备标识绑进派生过程; 为空时保持原派生结果,
+    仅供只有单一会话概念的历史 PoC 路径使用.
 
     :param shared_secret: X25519 协商结果
     :type shared_secret: bytes
@@ -324,14 +371,18 @@ def derive_aead_session(shared_secret: bytes, salt: bytes, initiator: bool) -> A
     :type salt: bytes
     :param initiator: 本端是否为主动发起方
     :type initiator: bool
+    :param context: 会话绑定上下文, 为空表示不绑定
+    :type context: bytes
     :return: 双向会话加解密器
     :rtype: AeadSession
     """
+    info = HKDF_INFO_PREFIX if not context else HKDF_INFO_PREFIX + b"|" + context
+    effective_salt = salt if not context else salt + b"|" + context
     material = HKDF(
         algorithm=hashes.SHA256(),
         length=64,
-        salt=salt,
-        info=b"rdc-poc-v1",
+        salt=effective_salt,
+        info=info,
     ).derive(shared_secret)
     key_a = material[:32]
     key_b = material[32:]

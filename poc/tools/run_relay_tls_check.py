@@ -252,6 +252,23 @@ def _request_relay_token(
         if auth_ok.get("type") != "auth_ok":
             raise RuntimeError(f"认证失败: {auth_ok.get('payload')}")
 
+        # 预算只签发给会话参与设备: 单机自检先发一条发给自己的 offer 建立会话并读走转发帧
+        send_frame(connection, build_envelope(
+            identity,
+            "offer",
+            {
+                "session_id": session_id,
+                "candidates": [{"kind": "host", "address": "127.0.0.1", "port": 5000, "priority": 1}],
+                "media_caps": {"codecs": ["h264"]},
+                "access_proof": "cHJvb2Y=",
+                "from_device_id": identity.device_id,
+                "to_device_id": identity.device_id,
+            },
+            session_id=session_id,
+        ))
+        if json.loads(recv_frame(connection).decode("utf-8")).get("type") != "offer":
+            raise RuntimeError("自建会话失败: 未收到 offer 回显")
+
         # 契约缺口沿用 202611-001: v1 无 from_device_id 字段, 服务端靠它定位公钥验签
         send_frame(connection, build_envelope(
             identity,

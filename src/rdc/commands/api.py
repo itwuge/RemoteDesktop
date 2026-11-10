@@ -15,10 +15,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from rdc.commands.service import CommandService
 from rdc.core.result import CommandResult
+from rdc.crypto.identity_store import load_or_create_identity
 
-_service = CommandService()
+# 应用默认使用真实连接策略与持久设备身份; 单测会通过 configure() 换成 stub 实例
+_service = CommandService(connect_mode="real", identity=load_or_create_identity())
 
 
 def configure(service: CommandService) -> None:
@@ -95,3 +100,33 @@ def open_settings() -> CommandResult:
 def apply_relay_policy(endpoint: str, egress_mbps: int, degrade_profile: str) -> CommandResult:
     """应用中继策略."""
     return _service.apply_relay_policy(endpoint, egress_mbps, degrade_profile)
+
+
+# ------------------------------------------------------------------------------------------
+# 以下三个函数不是契约命令, 只解决"界面如何拿到已解码画面与如何上行输入"这一缺口:
+# 契约第三节没有取帧与发送输入的入口, 按约束只在此登记缺口, 不改契约正文.
+# 界面仍只收集参数、调用命令层、呈现结果; 解码在 rdc.media.h264 内完成, 不进界面.
+# ------------------------------------------------------------------------------------------
+def watch_remote_frames(session_id: str, sink: Callable[[Any], None]) -> bool:
+    """登记远端画面回调; 回调参数为 rdc.media.h264.DecodedFrame."""
+    return _service.watch_remote_frames(session_id, sink)
+
+
+def send_remote_input(session_id: str, message: dict[str, Any]) -> bool:
+    """把一条键鼠消息交给真实会话上行."""
+    return _service.send_remote_input(session_id, message)
+
+
+def get_remote_stats(session_id: str) -> dict[str, Any]:
+    """返回真实会话的连接与帧统计."""
+    return _service.get_remote_stats(session_id)
+
+
+def request_remote_keyframe(session_id: str) -> CommandResult:
+    """请求被控端立即产生关键帧; 不是契约命令, 供会话页右键菜单使用."""
+    return _service.request_remote_keyframe(session_id)
+
+
+def get_hosting_info() -> dict[str, Any]:
+    """返回本机被控信息快照; 不是契约命令, 供会话页复制连接信息."""
+    return _service.get_hosting_info()

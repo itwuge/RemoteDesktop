@@ -1,0 +1,33 @@
+# 文件: rdc-cert-check.service.tmpl | 用途: 证书巡检 oneshot 单元 | 边界: 只读证书与配置
+[Unit]
+Description=RDC certificate expiry check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@GROUP@
+SupplementaryGroups=rdc rdc-signaling
+ExecStart=@SCRIPT@
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ReadOnlyPaths=/etc/rdc-relay
+SyslogIdentifier=rdc-cert-check
+StandardOutput=journal
+StandardError=journal

@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         "built_at": datetime.now().isoformat(timespec="seconds"),
         "makensis": str(makensis),
         "source_dir": str(source_dir),
-        "install_scope": "per-machine (Program Files 或用户选择目录)",
+        "install_scope": "per-user (%LOCALAPPDATA%\\Programs\\RDC 远程桌面)",
         "shortcuts": ["开始菜单", "桌面"],
         "uninstall": "控制面板卸载 或 安装目录 Uninstall.exe",
         "console": "无控制台 (PyInstaller --windowed)",

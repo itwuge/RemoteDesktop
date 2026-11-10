@@ -104,6 +104,12 @@ def _run_pyinstaller(
         str(spec_dir),
         "--version-file",
         str(version_file),
+        "--add-data",
+        f"{ROOT / 'src' / 'rdc' / 'ui' / 'assets'}{os.pathsep}rdc{os.sep}ui{os.sep}assets",
+        "--add-data",
+        f"{ROOT / 'deploy' / 'relay' / 'ca.crt'}{os.pathsep}rdc{os.sep}ui{os.sep}assets",
+        "--add-data",
+        f"{ROOT / 'deploy' / 'relay' / 'ca.crt'}{os.pathsep}rdc{os.sep}assets",
     ]
     if icon_path is not None:
         command.extend(["--icon", str(icon_path)])
@@ -137,7 +143,8 @@ def _portable_readme() -> str:
         "启动: 双击 rdc-desktop.exe, 不会出现黑色控制台窗口.\n"
         "配置: data\\config.json; update_source 可填本地 manifest.json 路径或本地 HTTP 地址.\n"
         "日志: data\\logs\\rdc.log.\n"
-        "卸载: 直接删除整个文件夹即可, 不写注册表, 不依赖系统 Python.\n"
+        "开机自启: 便携版默认关闭; 在设置页手动开启后会写入当前用户 Run 键, 删除文件夹前请先关闭.\n"
+        "卸载: 直接删除整个文件夹即可, 默认不写注册表, 不依赖系统 Python.\n"
         "说明: 本版本为内部 V1 构建, 未签名; 若被安全软件拦截请核对 sha256 后放行.\n"
     )
 

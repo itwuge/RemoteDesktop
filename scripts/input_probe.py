@@ -111,10 +111,13 @@ class Injector:
         return started_ns, time.perf_counter_ns()
 
     def _chord(self, virtual_key: int) -> None:
-        """Ctrl + 指定键的组合键."""
+        """Ctrl + 指定键的组合键; 逐事件留间隔, 避免高负载下修饰键先被吞掉."""
         self._send_key(self.VK_CONTROL, 0, 0)
+        time.sleep(0.03)
         self._send_key(virtual_key, 0, 0)
+        time.sleep(0.03)
         self._send_key(virtual_key, 0, self.KEYEVENTF_KEYUP)
+        time.sleep(0.03)
         self._send_key(self.VK_CONTROL, 0, self.KEYEVENTF_KEYUP)
         time.sleep(0.2)
 

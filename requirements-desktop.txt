@@ -2,3 +2,7 @@
 # 版本与本机实测环境一致: 2026-11-10
 PySide6==6.11.2
 cryptography==50.0.1
+# 被控端 H.264 编解码与像素处理; rdc.media.h264 / windows_dxcam 内延迟导入,
+# 必须在此声明, 否则 PyInstaller 冻结包会缺库 (Linux 被控端首帧编码即失败).
+av==19.0.2
+numpy==2.5.4

@@ -171,8 +171,10 @@ def check_commands() -> CommandResult:
         return _result(False, f"绑定失败: {bound.message}")
 
     devices = accounts.list_devices()
-    passwordless = bool(devices.data and devices.data["items"] and not devices.data["items"][0]["require_confirm"])
-    turned_on = accounts.set_trust_policy(SMOKE_DEVICE_ID, True)
+    first_device = devices.data["items"][0] if devices.data and devices.data["items"] else {}
+    require_confirm_default = bool(first_device.get("require_confirm"))
+    trusted = accounts.set_trust_policy(SMOKE_DEVICE_ID, False)
+    restored = accounts.set_trust_policy(SMOKE_DEVICE_ID, True)
     requested = accounts.request_access(SMOKE_DEVICE_ID, "control", "冒烟申请")
     if not requested.ok or not requested.data:
         return _result(False, f"申请失败: {requested.message}")
@@ -181,7 +183,6 @@ def check_commands() -> CommandResult:
         return _result(False, f"审批失败: {approved.message}")
     grants = accounts.list_grants(SMOKE_DEVICE_ID)
     revoked = accounts.revoke_grant(str(approved.data["grant_id"]))
-    accounts.set_trust_policy(SMOKE_DEVICE_ID, False)
 
     hosting = api.start_hosting("smoke")
     refreshed_code = api.refresh_access_code()
@@ -198,8 +199,9 @@ def check_commands() -> CommandResult:
         "login": login.ok,
         "refresh_token": refreshed.ok,
         "bind": bound.ok,
-        "passwordless_default": passwordless,
-        "trust_policy": turned_on.ok,
+        "require_confirm_default": require_confirm_default,
+        "trust_device": trusted.ok,
+        "trust_restore": restored.ok,
         "request": requested.ok,
         "approve": approved.ok,
         "grants": grants.ok,
@@ -275,7 +277,8 @@ def check_signaling() -> CommandResult:
                 "access_proof": "c21va2U=",
             },
             session_id="smoke-session",
-        )
+        ),
+        device_id=alice.device_id,
     )
     if len(server.routed) != 1 or not routed:
         return _result(False, "offer 未成功路由", errors=server.errors)
@@ -364,9 +367,9 @@ def check_ui_shell() -> CommandResult:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     visited: list[str] = []
-    for key, _label in NAV_ITEMS:
-        window.switch_page(key)
-        visited.append(key)
+    for item in NAV_ITEMS:
+        window.switch_page(item[0])
+        visited.append(item[0])
     disconnected = window.home.connect_status.text()
     window.close()
     app.processEvents()
@@ -1647,6 +1650,7 @@ def check_session_plane_messages_v13() -> CommandResult:
                 "total_bytes": len(content),
                 "chunk_size": 262144,
                 "digest_alg": "sha256",
+                "digest": digest,
             },
             "file_accept": {"session_id": session_id, "transfer_id": transfer_id, "accepted_items": ["a.bin"]},
             "file_chunk": {
@@ -1666,6 +1670,12 @@ def check_session_plane_messages_v13() -> CommandResult:
             },
             "file_complete": {"session_id": session_id, "transfer_id": transfer_id, "digest": digest},
             "file_abort": {"session_id": session_id, "transfer_id": transfer_id, "reason": "smoke"},
+            "file_result": {
+                "session_id": session_id,
+                "transfer_id": transfer_id,
+                "verified": True,
+                "digest": digest,
+            },
             "clipboard_update": {
                 "session_id": session_id,
                 "kind": "text",

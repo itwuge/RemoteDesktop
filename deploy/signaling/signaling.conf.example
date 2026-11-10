@@ -1,0 +1,65 @@
+# ==========================================================================================
+# 文件        : signaling.conf.example
+# 所属目录    : deploy/signaling/
+# 文件用途    : 独立信令服务配置模板; 部署到 /etc/rdc-signaling/signaling.conf (0640 root:rdc-signaling)
+# 架构定位    : 只提供信令与中继预算授予, 不承载中继数据面
+# 职责边界    : 只含部署参数, 不含口令与私钥
+# ==========================================================================================
+[server]
+# 独立端口 8760: 与 relay 8750/健康 8751/STUN 3478 均不冲突
+bind = 0.0.0.0
+port = 8760
+# 健康检查只监听回环, 安全组不得放行 8761
+health_bind = 127.0.0.1
+health_port = 8761
+max_connections = 64
+max_connections_per_ip = 8
+connect_rate_per_min = 60
+
+[security]
+allow_ips =
+deny_ips =
+
+[relay]
+# 信令只负责签发预算; 数据面仍在 relay.wuge.fun:8750
+endpoint = relay://relay.wuge.fun:8750
+egress_mbps = 3
+overhead_ratio = 0.0
+# 与 relay 保持同一并发口径: 3 Mbps 出口 1 路 720p30
+max_sessions = 1
+min_session_kbps = 200
+target_kbps = 2900
+profile_width = 1280
+profile_height = 720
+profile_fps = 30
+degrade_profile = L0
+# 信令独立部署的关键开关: 关闭中继数据面, 只保留信令与预算授予
+dataplane_enabled = false
+
+[wall_preview]
+width = 1280
+height = 720
+fps = 10
+kbps = 200
+# 720p 读正文实测线路 392 kbps, 上限取 400
+max_session_kbps = 400
+keyint = 10
+prefetch_frames = 2
+prefetch_wait_keyframe = true
+
+[logging]
+level = INFO
+
+[tls]
+# 沿用 relay 现有自签 CA 体系与 server.crt; 证书 SAN 覆盖 relay.wuge.fun、
+# localhost、127.0.0.1 与 47.109.32.249, 信令客户端连接 relay.wuge.fun:8760 或走隧道到 127.0.0.1:8760 均可校验通过。
+tls_enabled = true
+cert_file = /etc/rdc-relay/tls/server.crt
+key_file = /etc/rdc-relay/tls/server.key
+ca_file = /etc/rdc-relay/tls/ca.crt
+# 客户端证书策略: 默认关闭, 走方案 B(服务端证书 + 应用层 Ed25519 鉴权)。
+# 全仓库不使用 getpeercert(), 证书 CN/SAN 不参与设备/账号判定, 开启双向证书
+# 只是"准入闸门", 不提供设备级身份; 设备身份由 register 落库公钥与 challenge 签名保证。
+# 若合规必须双向证书(方案 A), 需同时落地: CN=device_id 绑定校验、30 天短证书
+# 自动续签、CRL 加载(VERIFY_CRL_CHECK_LEAF)与更新后重载, 缺一不可。
+require_client_cert = false

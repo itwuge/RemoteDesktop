@@ -97,7 +97,7 @@ class TokenBucket:
 
     def __init__(
         self,
-        rate_bps: int,
+        rate_bps: float,
         capacity: int,
         *,
         clock: Callable[[], float] = time.monotonic,
@@ -105,7 +105,7 @@ class TokenBucket:
     ) -> None:
         """初始化.
 
-        :param rate_bps: 每秒补充的令牌数（字节）
+        :param rate_bps: 每秒补充的令牌数（字节）, 允许小数, 不截断精度
         :param capacity: 桶容量（字节）, 即单次最大突发量
         :param clock: 单调时钟, 测试可注入假时钟
         :param initial_tokens: 初始令牌数, 默认从 0 开始
@@ -134,7 +134,7 @@ class TokenBucket:
         return allowed
 
     @property
-    def rate_bps(self) -> int:
+    def rate_bps(self) -> float:
         """当前补充速率, 字节每秒."""
         return self._rate_bps
 

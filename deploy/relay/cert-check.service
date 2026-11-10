@@ -1,0 +1,33 @@
+# 文件: cert-check.service | 用途: 每日证书巡检 oneshot 单元 | 边界: 只读证书, 不修改文件
+[Unit]
+Description=RDC certificate expiry check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=rdc
+Group=rdc
+# 退出码 0=OK / 1=WARN / 2=CRITICAL; 非零让 systemd 标记 failed, 并在 journal 留下完整 JSON
+ExecStart=/opt/rdc-py312/bin/python3.12 /usr/local/lib/rdc/cert_check.py --config /etc/rdc-relay/relay.conf --json
+SyslogIdentifier=rdc-cert-check
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/rdc-relay
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077

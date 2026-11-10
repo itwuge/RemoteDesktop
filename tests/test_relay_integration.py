@@ -220,7 +220,7 @@ def test_three_process_signaling_and_dataplane_roundtrip(tmp_path):
             build_envelope(
                 alice,
                 "relay_allocate",
-                {"session_id": SESSION_ID, "requested_kbps": 2760, "est_duration_s": 60},
+                {"session_id": SESSION_ID, "requested_kbps": 1380, "est_duration_s": 60},
                 session_id=SESSION_ID,
             ),
         )
@@ -253,12 +253,30 @@ def test_three_process_signaling_and_dataplane_roundtrip(tmp_path):
         assert final["signaling"]["active_sessions"] >= 1
 
         # 大帧: 剪贴板 image ≤ 4 MiB, Base64 后约 5.34 MiB; 验证数据面单帧上限已放宽到 6 MiB
+        # 预算只签发给会话参与设备: 先由 alice 发 offer 建立大帧会话, 并从 bob 侧读走转发帧
+        send_frame(
+            alice_sock,
+            build_envelope(
+                alice,
+                "offer",
+                {
+                    "session_id": LARGE_SESSION_ID,
+                    "candidates": [{"kind": "host", "address": "127.0.0.1", "port": 5000, "priority": 1}],
+                    "media_caps": {"codecs": ["h264"]},
+                    "access_proof": "cHJvb2Y=",
+                    "from_device_id": alice.device_id,
+                    "to_device_id": bob.device_id,
+                },
+                session_id=LARGE_SESSION_ID,
+            ),
+        )
+        assert json.loads(recv_frame(bob_sock).decode("utf-8"))["type"] == "offer"
         send_frame(
             alice_sock,
             build_envelope(
                 alice,
                 "relay_allocate",
-                {"session_id": LARGE_SESSION_ID, "requested_kbps": 2760, "est_duration_s": 60},
+                {"session_id": LARGE_SESSION_ID, "requested_kbps": 1380, "est_duration_s": 60},
                 session_id=LARGE_SESSION_ID,
             ),
         )

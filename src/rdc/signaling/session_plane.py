@@ -1,7 +1,7 @@
 # ==========================================================================================
 # 文件        : session_plane.py
 # 所属目录    : src/rdc/signaling/
-# 文件用途    : 会话数据面 9 类消息(file_*/clipboard_*)的语义校验与去重, 对应 protocol-v1 v1.3 3.1 节
+# 文件用途    : 会话数据面 10 类消息(file_*/clipboard_*)的语义校验与去重, 对应 protocol-v1 v1.5 3.1 节
 # 架构定位    : 协议层校验器, 不做网络收发, 不解析或记录消息内容
 # 核心功能    : 必填字段之外的类型/大小上限/顺序状态机/块幂等/剪贴板去重与摘要校验
 # 职责边界    : 不落盘; 不打印内容与摘要; 不替代端到端会话密钥解密
@@ -9,12 +9,13 @@
 
 """会话数据面消息校验.
 
-契约依据: docs/contracts/protocol-v1.md 第三节 v1.3 与 3.1 节.
+契约依据: docs/contracts/protocol-v1.md 第三节 v1.5 与 3.1 节.
 - 单块 ≤ 256 KiB, 未确认在途 ≤ 4 MiB, 单文件 ≤ 4 GiB, 单次条目 ≤ 4096.
-- 顺序: file_offer → file_accept → (file_chunk → file_ack)* → file_complete; file_abort 任意阶段终止.
+- 顺序: file_offer → file_accept → (file_chunk → file_ack)* → file_complete → file_result;
+  file_abort 任意阶段终止.
 - 重复块幂等; acked_bytes 只增不减; 剪贴板同 digest 去重, 摘要不一致丢弃.
 
-契约把 9 类消息划归会话数据面, 中继数据面按不透明密文转发. 本模块供信令侧
+契约把 10 类消息划归会话数据面, 中继数据面按不透明密文转发. 本模块供信令侧
 降级转发通道与联调入口做边界校验, 不读取内容落日志, 摘要只用于内存比对.
 """
 
@@ -76,6 +77,7 @@ class TransferState:
     total_bytes: int = 0
     chunk_size: int = CHUNK_MAX_BYTES
     digest_alg: str = DIGEST_ALGORITHM
+    digest: str = ""
     state: str = "offered"
     accepted: list[str] = field(default_factory=list)
     acked: dict[int, int] = field(default_factory=dict)
@@ -153,13 +155,21 @@ class SessionPlaneTracker:
             return Validation(FILE_OFFER_REJECTED, "chunk_size 必须在 1..256 KiB")
         if payload.get("digest_alg") != DIGEST_ALGORITHM:
             return Validation(FILE_OFFER_REJECTED, "digest_alg 只支持 sha256")
+        digest = str(payload.get("digest") or "")
+        if not _is_hex(digest):
+            return Validation(FILE_OFFER_REJECTED, "整体摘要必须是 64 位十六进制")
         if "resume" in payload and not _valid_resume(payload["resume"], sizes):
             return Validation(FILE_OFFER_REJECTED, "resume 与 items 不一致")
 
         key = (session_id, transfer_id)
         existing = self._transfers.get(key)
         if existing is not None and existing.state != "aborted":
-            if existing.items == sizes and existing.total_bytes == total and existing.chunk_size == chunk_size:
+            if (
+                existing.items == sizes
+                and existing.total_bytes == total
+                and existing.chunk_size == chunk_size
+                and existing.digest == digest
+            ):
                 return Validation(suppress=True)
             return Validation(FILE_OFFER_REJECTED, "同一 transfer_id 的条目不一致")
         self._transfers[key] = TransferState(
@@ -168,6 +178,7 @@ class SessionPlaneTracker:
             items=sizes,
             total_bytes=total,
             chunk_size=chunk_size,
+            digest=digest,
         )
         return PASS
 
@@ -185,11 +196,24 @@ class SessionPlaneTracker:
             if not isinstance(relative, str) or relative not in state.items or relative in chosen:
                 return Validation(FILE_OFFER_REJECTED, "accepted_items 必须是 items 的非重复子集")
             chosen.append(relative)
+        raw_resume = payload.get("resume")
+        if raw_resume is not None and not _valid_resume(raw_resume, state.items):
+            return Validation(FILE_OFFER_REJECTED, "resume 与 items 不一致")
+        offsets: dict[str, int] = {}
+        if isinstance(raw_resume, list):
+            for entry in raw_resume:
+                if not isinstance(entry, dict):
+                    continue
+                relative = entry.get("relative")
+                received = _as_int(entry.get("received_bytes"))
+                if isinstance(relative, str) and relative in chosen and received is not None:
+                    offsets[relative] = received
         state.accepted = chosen
         state.state = "accepted"
-        for index in range(len(chosen)):
-            state.acked[index] = 0
-            state.sent[index] = 0
+        for index, relative in enumerate(chosen):
+            resume = offsets.get(relative, 0)
+            state.acked[index] = resume
+            state.sent[index] = resume
         return PASS
 
     def _check_file_chunk(self, session_id: str, payload: dict[str, Any]) -> Validation:
@@ -275,6 +299,29 @@ class SessionPlaneTracker:
         if state is None:
             return Validation(TRANSFER_NOT_FOUND, "传输不存在")
         state.state = "aborted"
+        return PASS
+
+    def _check_file_result(self, session_id: str, payload: dict[str, Any]) -> Validation:
+        """收端回执: 只有 verified=true 且摘要一致才记为最终完成."""
+        state = self._transfer(session_id, payload)
+        if state is None:
+            return Validation(TRANSFER_NOT_FOUND, "传输不存在")
+        verified = payload.get("verified")
+        if not isinstance(verified, bool):
+            return Validation(TRANSFER_HASH_MISMATCH, "verified 必须是布尔值")
+        if state.state in ("verified", "failed"):
+            return Validation(suppress=True)
+        if state.state != "completed":
+            return Validation(FILE_CHUNK_INVALID, "file_result 必须发生在 file_complete 之后")
+        if verified:
+            if str(payload.get("digest") or "") != state.digest:
+                return Validation(TRANSFER_HASH_MISMATCH, "收端摘要与发送端不一致")
+            state.state = "verified"
+            return PASS
+        error_code = payload.get("error_code")
+        if not isinstance(error_code, str) or not error_code:
+            return Validation(TRANSFER_HASH_MISMATCH, "失败回执必须带 error_code")
+        state.state = "failed"
         return PASS
 
     # ------------------------------------------------------------------ 剪贴板

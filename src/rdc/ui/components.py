@@ -12,11 +12,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from PySide6.QtCore import (
+    QDate,
     QEasingCurve,
     QEvent,
+    QPoint,
     QPointF,
     QPropertyAnimation,
     QRectF,
@@ -27,6 +30,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QContextMenuEvent,
     QEnterEvent,
     QFont,
     QLinearGradient,
@@ -38,11 +42,14 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -50,7 +57,15 @@ from PySide6.QtWidgets import (
 )
 
 from rdc.ui import icons
-from rdc.ui.theme import active
+from rdc.ui.copy import platform_text, trusted_source_text
+from rdc.ui.theme import BRAND_MARK, active
+
+
+def _ink(token: dict[str, str], alpha: int) -> QColor:
+    """投影与遮挡用色: 取当前主题的 shadow 令牌, 只调整透明度."""
+    color = QColor(token["shadow"])
+    color.setAlpha(alpha)
+    return color
 
 
 class BrandMark(QWidget):
@@ -67,8 +82,8 @@ class BrandMark(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(0, 0, self._side, self._side)
         gradient = QLinearGradient(0, 0, self._side, self._side)
-        gradient.setColorAt(0.0, QColor(token["accent"]))
-        gradient.setColorAt(1.0, QColor(token["accent_2"]))
+        gradient.setColorAt(0.0, QColor(BRAND_MARK["from"]))
+        gradient.setColorAt(1.0, QColor(BRAND_MARK["to"]))
         painter.setBrush(gradient)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, self._side * 0.3, self._side * 0.3)
@@ -154,7 +169,7 @@ class Illustration(QWidget):
         painter.drawRoundedRect(rect, 5, 5)
 
     def _paint_devices(self, painter: QPainter, token: dict[str, str]) -> None:
-        painter.setBrush(QColor(0, 0, 0, 26))
+        painter.setBrush(_ink(token, 26))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(50, 128, 132, 12))
         self._panel(painter, QRectF(44, 34, 120, 78), token, 10)
@@ -180,7 +195,7 @@ class Illustration(QWidget):
         painter.drawEllipse(QRectF(150, 44, 8, 8))
 
     def _paint_wall(self, painter: QPainter, token: dict[str, str]) -> None:
-        painter.setBrush(QColor(0, 0, 0, 22))
+        painter.setBrush(_ink(token, 22))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(38, 128, 164, 12))
         for index, (x, y) in enumerate(((40, 28), (126, 28), (40, 80), (126, 80))):
@@ -194,7 +209,7 @@ class Illustration(QWidget):
             painter.drawLine(QPointF(x + 28, y + 51), QPointF(x + 46, y + 51))
 
     def _paint_inbox(self, painter: QPainter, token: dict[str, str]) -> None:
-        painter.setBrush(QColor(0, 0, 0, 22))
+        painter.setBrush(_ink(token, 22))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(46, 128, 148, 12))
         for offset, width in ((0, 104), (10, 124), (20, 84)):
@@ -215,12 +230,12 @@ class Illustration(QWidget):
         painter.setBrush(QColor(token["accent"]))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(150, 72, 34, 34))
-        painter.setPen(QPen(QColor("#ffffff"), 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(QColor(token["white"]), 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QPointF(159, 89), QPointF(166, 96))
         painter.drawLine(QPointF(166, 96), QPointF(177, 82))
 
     def _paint_session(self, painter: QPainter, token: dict[str, str]) -> None:
-        painter.setBrush(QColor(0, 0, 0, 26))
+        painter.setBrush(_ink(token, 26))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(38, 130, 164, 12))
         self._panel(painter, QRectF(34, 24, 172, 104), token, 12)
@@ -270,12 +285,40 @@ class Illustration(QWidget):
         painter.setBrush(fill)
         painter.setPen(QPen(QColor(token["accent"]), 2.2))
         painter.drawPath(path)
-        painter.setPen(QPen(QColor("#ffffff"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(QColor(token["white"]), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(QPointF(98, 88), QPointF(114, 104))
         painter.drawLine(QPointF(114, 104), QPointF(145, 71))
         painter.setPen(QPen(QColor(token["line_strong"]), 1.6))
         painter.drawEllipse(QRectF(52, 34, 7, 7))
         painter.drawEllipse(QRectF(184, 102, 5, 5))
+
+    def _paint_auth(self, painter: QPainter, token: dict[str, str]) -> None:
+        """登录页设备示意: 显示器 + 手机 + 圆形加号, 几何取自 ui-v2 原型 auth-art."""
+        painter.save()
+        painter.translate(10.0, 24.0)
+        line = QPen(QColor(token["line_strong"]), 2.0)
+        line.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(line)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(QRectF(16, 18, 76, 50), 7, 7)
+        painter.drawLine(QPointF(36, 76), QPointF(72, 76))
+        painter.drawLine(QPointF(46, 68), QPointF(46, 76))
+        painter.drawLine(QPointF(62, 68), QPointF(62, 76))
+        painter.drawRoundedRect(QRectF(108, 30, 42, 66), 8, 8)
+        painter.drawLine(QPointF(124, 86), QPointF(134, 86))
+        accent = QPen(QColor(token["accent"]), 2.0)
+        accent.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(accent)
+        painter.drawEllipse(QRectF(158, 24, 44, 44))
+        painter.drawLine(QPointF(180, 35), QPointF(180, 57))
+        painter.drawLine(QPointF(169, 46), QPointF(191, 46))
+        dash = QPen(QColor(token["accent"]), 2.0)
+        dash.setCapStyle(Qt.PenCapStyle.RoundCap)
+        dash.setDashPattern([3.0, 4.0])
+        painter.setPen(dash)
+        painter.drawLine(QPointF(92, 48), QPointF(106, 48))
+        painter.drawLine(QPointF(150, 48), QPointF(158, 48))
+        painter.restore()
 
     def _paint_search(self, painter: QPainter, token: dict[str, str]) -> None:
         self._panel(painter, QRectF(34, 36, 116, 76), token, 10)
@@ -391,8 +434,116 @@ def apply_shadow(widget: QWidget, blur: int = 24, offset: int = 5, alpha: int = 
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(blur)
     effect.setOffset(0, offset)
-    effect.setColor(QColor(4, 10, 20, alpha))
+    effect.setColor(_ink(active(), alpha))
     widget.setGraphicsEffect(effect)
+
+
+COPIED_TEXT = "已复制"
+COPY_TOAST_MS = 1500
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """写入系统剪贴板; 空内容不复制, 避免把「已复制」提示用在无内容可复制时."""
+    value = (text or "").strip()
+    clipboard = QApplication.clipboard()
+    if not value or clipboard is None:
+        return False
+    clipboard.setText(value)
+    return True
+
+
+def show_toast(anchor: QWidget, text: str = COPIED_TEXT, duration: int = COPY_TOAST_MS) -> None:
+    """在窗口底部居中弹出一条不接收鼠标的轻提示, 到时自动消失."""
+    window = anchor.window()
+    previous = window.findChild(QLabel, "toast")
+    if previous is not None:
+        previous.deleteLater()
+    toast = QLabel(text, window)
+    toast.setObjectName("toast")
+    toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    toast.adjustSize()
+    left = max(12, (window.width() - toast.width()) // 2)
+    top = max(12, window.height() - toast.height() - 46)
+    toast.move(left, top)
+    toast.show()
+    toast.raise_()
+    QTimer.singleShot(duration, toast.deleteLater)
+
+
+class CopyButton(QPushButton):
+    """行内复制按钮: 点击复制并显示 1.5 秒「已复制」轻提示."""
+
+    copied = Signal(str)
+
+    def __init__(self, value: str = "", tooltip: str = "复制", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._value = value
+        self.setObjectName("copyBtn")
+        self.setFixedSize(26, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(tooltip)
+        icons.apply_icon(self, "copy", tone="muted", size=14)
+        self.clicked.connect(self._on_clicked)
+
+    def set_value(self, value: str, tooltip: str | None = None) -> None:
+        self._value = value
+        if tooltip is not None:
+            self.setToolTip(tooltip)
+        self.setEnabled(bool(value))
+
+    def _on_clicked(self) -> None:
+        if copy_to_clipboard(self._value):
+            show_toast(self)
+            self.copied.emit(self._value)
+
+
+@dataclass(frozen=True)
+class MenuItem:
+    """右键菜单项; 禁用项置灰, 危险项用红色图标并单独隔开."""
+
+    text: str
+    callback: Callable[[], None] | None = None
+    enabled: bool = True
+    danger: bool = False
+    checkable: bool = False
+    checked: bool = False
+    tip: str = ""
+
+
+def open_menu(anchor: QWidget, position: QPoint, items: list[MenuItem | None]) -> None:
+    """在指定位置打开右键菜单; None 表示分隔线."""
+    menu = QMenu(anchor)
+    menu.setToolTipsVisible(True)
+    for entry in items:
+        if entry is None:
+            menu.addSeparator()
+            continue
+        action = menu.addAction(entry.text)
+        action.setEnabled(entry.enabled)
+        if entry.tip:
+            action.setToolTip(entry.tip)
+        if entry.checkable:
+            action.setCheckable(True)
+            action.setChecked(entry.checked)
+        if entry.danger:
+            action.setIcon(icons.icon("trash", active()["danger"], 14))
+        if entry.callback is not None and entry.enabled:
+            action.triggered.connect(entry.callback)
+    menu.exec(anchor.mapToGlobal(position))
+
+
+def confirm(parent: QWidget, title: str, text: str, ok_text: str = "确认", *, danger: bool = True) -> bool:
+    """二次确认对话框; 确认与取消都用中文按钮."""
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setIcon(QMessageBox.Icon.Warning if danger else QMessageBox.Icon.Question)
+    accept = box.addButton(ok_text, QMessageBox.ButtonRole.AcceptRole)
+    reject = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(reject)
+    box.exec()
+    return box.clickedButton() is accept
 
 
 class DeviceThumbnail(QWidget):
@@ -478,52 +629,109 @@ class DeviceThumbnail(QWidget):
         painter.end()
 
 
+PLATFORM_GLYPH = {
+    "windows": "monitor",
+    "win": "monitor",
+    "macos": "laptop",
+    "mac": "laptop",
+    "linux": "server",
+    "android": "smartphone",
+    "ios": "smartphone",
+    "iphone": "smartphone",
+}
+
+
+def relative_day(value: str | None) -> str:
+    """把 ISO 时间压成设备卡上的相对日期; 空值显示「未知」."""
+    text = (value or "").strip()
+    if len(text) < 10:
+        return "未知"
+    today = QDate.currentDate()
+    parsed = QDate.fromString(text[:10], "yyyy-MM-dd")
+    if not parsed.isValid():
+        return "未知"
+    days = parsed.daysTo(today)
+    if days == 0:
+        return "今天"
+    if days == 1:
+        return "昨天"
+    return f"{parsed.month():02d}-{parsed.day():02d}"
+
+
 class DeviceCard(QFrame):
-    """设备卡片: 缩略图、在线状态、名称、系统标识与绑定信息."""
+    """设备卡片: 缩略图、在线状态、平台、设备编号与四项右键动作."""
 
     clicked = Signal(str)
+    connect_requested = Signal(str)
+    trust_requested = Signal(str, bool)
+    remove_requested = Signal(str)
 
-    def __init__(self, item: dict[str, Any]) -> None:
+    def __init__(self, item: dict[str, Any], *, current: bool = False) -> None:
         super().__init__()
         self.device_id = str(item.get("device_id", ""))
+        self.display_name = str(item.get("display_name") or "未命名设备")
+        self.online = bool(item.get("online"))
+        self.current = current
+        self.trusted = bool(item.get("trusted"))
+        presence = str(item.get("presence_state") or ("online" if self.online else "offline"))
+        platform_key = str(item.get("platform") or "").strip().lower()
         self.setObjectName("deviceCard")
         self.setProperty("selected", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumWidth(246)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         apply_shadow(self, 18, 4, 30)
-        online = bool(item.get("online"))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
-        layout.addWidget(DeviceThumbnail(online))
+        layout.addWidget(DeviceThumbnail(self.online))
 
         title_row = QHBoxLayout()
         title_row.setSpacing(6)
-        name = QLabel(str(item.get("display_name") or "未命名设备"))
+        name = QLabel(self.display_name)
         name.setObjectName("cardTitle")
         name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         title_row.addWidget(name, 1)
-        status = chip("在线" if online else "离线", "ok" if online else "")
-        title_row.addWidget(status)
+        if self.current:
+            title_row.addWidget(chip("本机", "accent"))
+        presence_text = {"online": "在线", "offline": "离线"}.get(presence, "状态未知")
+        title_row.addWidget(chip(presence_text, "ok" if self.online else ""))
         layout.addLayout(title_row)
 
-        device_label = QLabel(self.device_id or "-")
-        device_label.setObjectName("mono")
-        device_label.setProperty("class", "muted")
-        layout.addWidget(device_label)
+        platform_row = QHBoxLayout()
+        platform_row.setSpacing(6)
+        glyph = QLabel()
+        glyph.setPixmap(icons.pixmap(PLATFORM_GLYPH.get(platform_key, "monitor-off"), active()["muted"], 15))
+        platform_row.addWidget(glyph)
+        platform_name = QLabel(platform_text(platform_key))
+        platform_name.setObjectName("cardMeta")
+        platform_row.addWidget(platform_name)
+        platform_row.addStretch(1)
+        if self.trusted:
+            badge = chip("受信", "ok")
+            badge.setToolTip(
+                f"{trusted_source_text(item.get('trust_source'))} · 授信时间 {_plain_time(item.get('trusted_at'))}"
+            )
+        else:
+            badge = chip("需连接码")
+            badge.setToolTip("未受信设备连接时需要输入对方给出的连接码")
+        platform_row.addWidget(badge)
+        layout.addLayout(platform_row)
 
-        os_name = str(item.get("os") or item.get("platform") or item.get("os_name") or "系统未上报")
-        meta = QHBoxLayout()
-        meta.setSpacing(6)
-        meta.addWidget(chip(os_name))
-        meta.addWidget(chip("所有者" if item.get("owner") else "被授权"))
-        meta.addWidget(chip("免确认" if not item.get("require_confirm") else "需审批"))
-        meta.addStretch(1)
-        layout.addLayout(meta)
+        code_row = QHBoxLayout()
+        code_row.setSpacing(6)
+        code_label = QLabel(self.device_id or "-")
+        code_label.setObjectName("mono")
+        code_label.setProperty("class", "muted")
+        code_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        code_label.setToolTip(f"设备编号 {self.device_id}")
+        code_row.addWidget(code_label, 1)
+        code_row.addWidget(CopyButton(self.device_id, "复制设备编号"))
+        layout.addLayout(code_row)
 
-        bound = str(item.get("bound_at") or "")
-        footer = QLabel(f"绑定时间 {bound}" if bound else "绑定时间 -")
+        footer = QLabel(
+            f"最近连接 {relative_day(item.get('last_connected_at'))} · 绑定 {_plain_time(item.get('bound_at'))}"
+        )
         footer.setObjectName("cardMeta")
         layout.addWidget(footer)
 
@@ -537,6 +745,50 @@ class DeviceCard(QFrame):
         if self.device_id:
             self.clicked.emit(self.device_id)
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """设备卡右键菜单: 6 项, 不可用项置灰, 危险项单独隔开."""
+        if self.device_id:
+            self.clicked.emit(self.device_id)
+        connect_state = self.online and not self.current
+        trust_text = "撤销信任" if self.trusted else "设为受信"
+        items: list[MenuItem | None] = [
+            MenuItem(
+                "连接",
+                lambda: self.connect_requested.emit(self.device_id),
+                enabled=connect_state,
+                tip="" if connect_state else ("本机不可自连" if self.current else "设备离线, 无法连接"),
+            ),
+            MenuItem(
+                trust_text,
+                lambda: self.trust_requested.emit(self.device_id, not self.trusted),
+                enabled=not self.current,
+                tip="" if not self.current else "本机不可设置信任",
+            ),
+            MenuItem("重命名", None, enabled=False, tip="契约暂未提供重命名命令"),
+            MenuItem("复制设备编号", self._copy_device_id),
+            None,
+            MenuItem(
+                "删除",
+                lambda: self.remove_requested.emit(self.device_id),
+                enabled=not self.current,
+                danger=True,
+                tip="只解绑并移出列表, 不卸载对端" if not self.current else "本机不可删除",
+            ),
+        ]
+        open_menu(self, event.pos(), items)
+
+    def _copy_device_id(self) -> None:
+        if copy_to_clipboard(self.device_id):
+            show_toast(self)
+
+
+def _plain_time(value: object) -> str:
+    """时间只保留到分钟; 空值显示「未知」."""
+    text = str(value or "").strip()
+    if len(text) >= 16 and text[4] == "-" and text[10] == "T":
+        return f"{text[0:10]} {text[11:16]}"
+    return text or "未知"
 
 
 class WallCellButton(QPushButton):
@@ -598,7 +850,7 @@ class WallCellButton(QPushButton):
 
         if self._focused:
             badge = QRectF(rect.left() + 10, rect.top() + 10, 42, 20)
-            painter.setBrush(QColor(0, 0, 0, 60))
+            painter.setBrush(_ink(token, 60))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(badge, 10, 10)
             painter.setPen(QColor(token["white"]))

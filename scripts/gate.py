@@ -14,6 +14,8 @@
     python scripts/gate.py [--skip-tests]
 
 证据目录: %RDC_BUILD_ROOT%\\evidence\\gate\\<时间戳>\\
+日志目录: %RDC_BUILD_ROOT%\\logs\\gate\\<时间戳>\\ (本次运行独占, 不与他人共用 rdc.log)
+并发控制: %RDC_BUILD_ROOT%\\gate.lock 单飞锁, 后到进程排队等待而不是并行开跑
 退出码: 任一项失败返回 1, 全绿返回 0.
 """
 
@@ -29,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_PATHS = ("src", "tests", "scripts")
@@ -36,6 +39,8 @@ FILE_SUFFIXES = {".py", ".md", ".toml", ".json", ".yaml", ".yml"}
 ENCODING_DIRS = ("src", "tests", "scripts", "docs", ".team")
 CONTRACT_PATH = ROOT / "docs" / "contracts" / "desktop-v1.md"
 ERRORS_PATH = ROOT / "src" / "rdc" / "core" / "errors.py"
+_LOCK_OFFSET = 4096
+_RUN_LOG_DIR: Path | None = None
 
 
 @dataclass
@@ -49,16 +54,145 @@ class StepResult:
     output: str = field(default="", repr=False)
 
 
-def _evidence_root() -> Path:
+def _build_root() -> Path:
+    """返回构建根: RDC_BUILD_ROOT > D:\\RDC-Build > 仓库根."""
     configured = os.environ.get("RDC_BUILD_ROOT")
     if configured and Path(configured).is_dir():
-        return Path(configured) / "evidence"
+        return Path(configured)
     default = Path(r"D:\RDC-Build")
     if default.is_dir():
-        return default / "evidence"
-    fallback = ROOT / "evidence"
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+        return default
+    return ROOT
+
+
+def _evidence_root() -> Path:
+    root = _build_root()
+    if root == ROOT:
+        root.mkdir(parents=True, exist_ok=True)
+    return root / "evidence"
+
+
+def _lock_path() -> Path:
+    return _build_root() / "gate.lock"
+
+
+def _try_lock(handle: TextIO) -> bool:
+    """尝试取 OS 级排他锁, 拿不到立即返回 False.
+
+    锁区放在 4 KiB 偏移处: Windows 的字节锁是强制的, 锁住首字节会让其他进程
+    读不到锁文件里的持有者信息; 偏移区之外仍可正常读取 pid.
+    """
+    fileno = handle.fileno()
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            handle.seek(_LOCK_OFFSET)
+            msvcrt.locking(fileno, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    import fcntl
+
+    try:
+        fcntl.flock(fileno, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(handle: TextIO) -> None:
+    fileno = handle.fileno()
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            handle.seek(_LOCK_OFFSET)
+            msvcrt.locking(fileno, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            return
+        return
+    import fcntl
+
+    try:
+        fcntl.flock(fileno, fcntl.LOCK_UN)
+    except OSError:
+        return
+
+
+def _pid_alive(pid: int) -> bool:
+    """判断 PID 是否仍存在; 不存在说明锁是异常退出的残留."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        process = kernel32.OpenProcess(0x1000, False, pid)
+        if not process:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(process, ctypes.byref(code))
+        kernel32.CloseHandle(process)
+        return bool(ok) and code.value == 259
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _read_holder(handle: TextIO) -> dict[str, int]:
+    """读取锁文件里的持有者信息."""
+    try:
+        handle.seek(0)
+        text = handle.read() or ""
+    except (OSError, ValueError):
+        return {}
+    holder: dict[str, int] = {}
+    match = re.search(r"pid=(\d+)", text)
+    if match:
+        holder["pid"] = int(match.group(1))
+    return holder
+
+
+def _write_holder(handle: TextIO) -> None:
+    """把当前进程信息写入锁文件, 便于等待方与残留检测."""
+    payload = f"pid={os.getpid()}\nstarted={datetime.now().isoformat(timespec='seconds')}\ncwd={Path.cwd()}\n"
+    handle.seek(0)
+    handle.truncate()
+    handle.write(payload)
+    handle.flush()
+
+
+def _acquire_lock(path: Path) -> TextIO:
+    """单飞: 同一构建根只允许一个门禁运行, 后到者排队等待."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    waited = False
+    stale_reported = False
+    while True:
+        if _try_lock(handle):
+            if waited:
+                _emit("门禁锁已释放, 继续执行")
+            _write_holder(handle)
+            return handle
+        holder = _read_holder(handle)
+        pid = holder.get("pid", 0)
+        if pid and not _pid_alive(pid):
+            if not stale_reported:
+                _emit(f"发现残留门禁锁 (PID {pid} 已退出), 清理后重试")
+                stale_reported = True
+            try:
+                handle.seek(0)
+                handle.truncate()
+                handle.flush()
+            except OSError:
+                pass
+        elif not waited:
+            _emit(f"已有门禁在运行, 等待中 (持有 PID {pid or '未知'})")
+            waited = True
+        time.sleep(0.5)
 
 
 def _pylibs() -> Path:
@@ -73,6 +207,8 @@ def _subprocess_env() -> dict[str, str]:
         parts.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(parts)
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if _RUN_LOG_DIR is not None:
+        env["RDC_LOG_DIR"] = str(_RUN_LOG_DIR)
     return env
 
 
@@ -277,74 +413,95 @@ def check_pytest() -> StepResult:
     return StepResult("pytest 单元测试", ok, failures + errors, detail, text)
 
 
+def _prepare_run(stamp: str) -> Path:
+    """创建本次运行的证据与日志目录; 日志目录按实例隔离, 避免共用 rdc.log."""
+    global _RUN_LOG_DIR
+    _RUN_LOG_DIR = _build_root() / "logs" / "gate" / stamp
+    _RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    evidence_dir = _evidence_root() / "gate" / stamp
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    return evidence_dir
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = argv if argv is not None else sys.argv[1:]
     skip_tests = "--skip-tests" in arguments
-    started = time.perf_counter()
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    evidence_dir = _evidence_root() / "gate" / stamp
-    evidence_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = _lock_path()
+    lock_handle = _acquire_lock(lock_path)
+    try:
+        started = time.perf_counter()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        evidence_dir = _prepare_run(stamp)
 
-    _emit("=" * 100)
-    _emit(f"RDC 统一门禁  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    _emit(f"范围: {' '.join(SCAN_PATHS)}; 类型: src/rdc; 证据: {evidence_dir}")
-    _emit("=" * 100)
+        _emit("=" * 100)
+        _emit(f"RDC 统一门禁  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        _emit(f"单飞锁: {lock_path}")
+        _emit(f"范围: {' '.join(SCAN_PATHS)}; 类型: src/rdc; 证据: {evidence_dir}")
+        _emit(f"本次日志目录: {_RUN_LOG_DIR}")
+        _emit("=" * 100)
 
-    steps = [
-        check_ruff_lint,
-        check_ruff_format,
-        check_banned_patterns,
-        check_structure,
-        check_mypy,
-    ]
-    results: list[StepResult] = []
-    for step in steps:
+        steps = [
+            check_ruff_lint,
+            check_ruff_format,
+            check_banned_patterns,
+            check_structure,
+            check_mypy,
+        ]
+        results: list[StepResult] = []
+        for step in steps:
+            _emit("")
+            _emit(f"== {step.__name__} ==")
+            result = step()
+            results.append(result)
+            code = "PASS" if result.passed else "FAIL"
+            _emit(f"{code} {result.name}: {result.detail}")
+        if not skip_tests:
+            _emit("")
+            _emit("== pytest ==")
+            result = check_pytest()
+            results.append(result)
+            code = "PASS" if result.passed else "FAIL"
+            _emit(f"{code} {result.name}: {result.detail}")
+
+        elapsed = round(time.perf_counter() - started, 2)
+        failed = [item for item in results if not item.passed]
+        total_violations = sum(item.count for item in results)
         _emit("")
-        _emit(f"== {step.__name__} ==")
-        result = step()
-        results.append(result)
-        code = "PASS" if result.passed else "FAIL"
-        _emit(f"{code} {result.name}: {result.detail}")
-    if not skip_tests:
-        _emit("")
-        _emit("== pytest ==")
-        result = check_pytest()
-        results.append(result)
-        code = "PASS" if result.passed else "FAIL"
-        _emit(f"{code} {result.name}: {result.detail}")
+        _emit("-" * 100)
+        _emit(f"{'项目':<20}{'结论':<8}{'违规计数':<10}说明")
+        for item in results:
+            _emit(f"{item.name:<20}{'通过' if item.passed else '失败':<8}{item.count:<10}{item.detail}")
+        _emit("-" * 100)
+        passed_count = len(results) - len(failed)
+        _emit(
+            f"总计 {len(results)} 项: 通过 {passed_count}, 失败 {len(failed)}, 违规 {total_violations}, 用时 {elapsed}s"
+        )
+        _emit(f"证据: {evidence_dir}")
+        _emit(f"日志: {_RUN_LOG_DIR}")
 
-    elapsed = round(time.perf_counter() - started, 2)
-    failed = [item for item in results if not item.passed]
-    total_violations = sum(item.count for item in results)
-    _emit("")
-    _emit("-" * 100)
-    _emit(f"{'项目':<20}{'结论':<8}{'违规计数':<10}说明")
-    for item in results:
-        _emit(f"{item.name:<20}{'通过' if item.passed else '失败':<8}{item.count:<10}{item.detail}")
-    _emit("-" * 100)
-    passed_count = len(results) - len(failed)
-    _emit(f"总计 {len(results)} 项: 通过 {passed_count}, 失败 {len(failed)}, 违规 {total_violations}, 用时 {elapsed}s")
-    _emit(f"证据: {evidence_dir}")
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "elapsed_s": elapsed,
+            "scope": list(SCAN_PATHS),
+            "total_violations": total_violations,
+            "passed": not failed,
+            "steps": [
+                {"name": item.name, "passed": item.passed, "count": item.count, "detail": item.detail}
+                for item in results
+            ],
+        }
+        (evidence_dir / "gate.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        log_text = "\n\n".join(f"===== {item.name} =====\n{item.output}" for item in results)
+        (evidence_dir / "gate.log").write_text(log_text, encoding="utf-8")
 
-    payload = {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "elapsed_s": elapsed,
-        "scope": list(SCAN_PATHS),
-        "total_violations": total_violations,
-        "passed": not failed,
-        "steps": [
-            {"name": item.name, "passed": item.passed, "count": item.count, "detail": item.detail} for item in results
-        ],
-    }
-    (evidence_dir / "gate.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    log_text = "\n\n".join(f"===== {item.name} =====\n{item.output}" for item in results)
-    (evidence_dir / "gate.log").write_text(log_text, encoding="utf-8")
-
-    if failed:
-        _emit("结果: 门禁失败")
-        return 1
-    _emit("结果: 门禁全绿")
-    return 0
+        if failed:
+            _emit("结果: 门禁失败")
+            return 1
+        _emit("结果: 门禁全绿")
+        return 0
+    finally:
+        _unlock(lock_handle)
+        lock_handle.close()
 
 
 if __name__ == "__main__":

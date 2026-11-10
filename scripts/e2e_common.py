@@ -1,317 +1,133 @@
 # ==========================================================================================
 # 文件        : e2e_common.py
 # 所属目录    : scripts/
-# 文件用途    : 端到端远程输入验证的公共装置: 帧收发、信令客户端、中继接入、AEAD 通道、Windows 取证
-# 架构定位    : 验收装置, 复用产品信令/中继实现, 不修改产品代码
-# 核心功能    : 4 字节长度帧、注册/挑战/认证、offer/answer 路由、relay_allocate、数据面握手、
-#               ChaCha20-Poly1305 会话通道、前台窗口/剪贴板/窗口矩形等取证原语
-# 职责边界    : 不承载产品业务逻辑; 不写 src; 不访问公网; 不伪造成功
+# 文件用途    : 端到端验证的公共装置; 协议、加解密、握手与数据面全部转发产品实现
+# 架构定位    : 薄壳。实现已收编到 src/rdc/session 与 src/rdc/clipboard, 这里只保留
+#               验收专用的等待/取证原语(窗口截图、剪贴板、JSON 证据), 不再自带第二套协议
+# 核心功能    : 产品实现的统一导出; 旧的信令客户端参数兼容; Windows 取证原语
+# 职责边界    : 不重写帧格式、AEAD、握手、中继接入; 不承载产品业务逻辑; 不访问公网
 # ==========================================================================================
 
 """端到端验证公共组件.
 
-帧格式与信令、中继一致: 4 字节大端长度 + 负载. 信令帧是 JSON 包络,
-数据面首个帧是明文握手 JSON, 之后是由本模块 AEAD 通道承载的密文.
+协议实现只有一份: ``rdc.session.wire`` / ``crypto`` / ``handshake`` / ``dataplane`` / ``control``.
+本模块保留旧名字做导入兼容, 另含验收专用的 Windows 取证与等待原语.
 """
 
 from __future__ import annotations
 
 import ctypes
 import json
-import os
-import socket
-import struct
 import time
 from collections.abc import Callable
 from pathlib import Path, PurePath
 from typing import Any
 
-from poc.common.crypto import AeadSession, EphemeralKeyPair, derive_aead_session
-
-from rdc.crypto.identity import (
-    DeviceIdentity,
-    b64decode,
-    b64encode,
-    device_id_from_public_key,
-    verify_signature,
+from rdc.clipboard.system import read_system_clipboard as _read_system_clipboard
+from rdc.clipboard.system import write_system_clipboard as _write_system_clipboard
+from rdc.session.control import SignalingClient as _ProductSignalingClient
+from rdc.session.crypto import HANDSHAKE_VERSION, AeadSession, EphemeralKeyPair, derive_aead_session
+from rdc.session.dataplane import AeadChannel, DataPlaneError, relay_connect, tls_connect
+from rdc.session.handshake import (
+    ACCESS_FAILURE_LIMIT,
+    ACCESS_MAX_BACKOFF_S,
+    ACCESS_NONCE_CACHE,
+    ACCESS_PROOF_ALG,
+    AccessCodeGuard,
+    HandshakeError,
+    access_proof_message,
+    build_access_proof,
+    controller_handshake,
+    host_handshake,
+    verify_access_proof,
 )
-from rdc.signaling.envelope import build_envelope
+from rdc.session.wire import MAX_FRAME_BYTES, WireError, recv_json, recv_packet, send_json, send_packet
+from rdc.session.wire import recv_exactly as _recv_exactly
 
-MAX_FRAME_BYTES = 6 << 20
+E2EFailure = HandshakeError
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 
-
-class E2EFailure(Exception):
-    """端到端装置失败, 携带可落盘的错误说明."""
-
-
-# ================================ 帧收发 ================================
-
-
-def send_packet(sock: socket.socket, payload: bytes) -> None:
-    """发送一帧: 4 字节大端长度 + 负载."""
-    if not payload or len(payload) > MAX_FRAME_BYTES:
-        raise E2EFailure(f"帧长度非法: {len(payload)}")
-    sock.sendall(struct.pack(">I", len(payload)) + payload)
-
-
-def _recv_exactly(sock: socket.socket, size: int) -> bytes | None:
-    buffer = bytearray()
-    while len(buffer) < size:
-        chunk = sock.recv(size - len(buffer))
-        if not chunk:
-            return None
-        buffer.extend(chunk)
-    return bytes(buffer)
-
-
-def recv_packet(sock: socket.socket) -> bytes | None:
-    """接收一帧; 对端正常关闭返回 None."""
-    header = _recv_exactly(sock, 4)
-    if header is None:
-        return None
-    (length,) = struct.unpack(">I", header)
-    if length == 0 or length > MAX_FRAME_BYTES:
-        raise E2EFailure(f"帧长度非法: {length}")
-    body = _recv_exactly(sock, length)
-    if body is None:
-        raise E2EFailure("帧体被截断")
-    return body
-
-
-def send_json(sock: socket.socket, payload: dict[str, Any]) -> None:
-    """发送 JSON 帧."""
-    send_packet(sock, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-
-
-def recv_json(sock: socket.socket) -> dict[str, Any] | None:
-    """接收 JSON 帧."""
-    body = recv_packet(sock)
-    if body is None:
-        return None
-    try:
-        value = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise E2EFailure(f"对端帧不是合法 JSON: {exc}") from exc
-    if not isinstance(value, dict):
-        raise E2EFailure("对端帧必须是 JSON 对象")
-    return value
+__all__ = [
+    "ACCESS_FAILURE_LIMIT",
+    "ACCESS_MAX_BACKOFF_S",
+    "ACCESS_NONCE_CACHE",
+    "ACCESS_PROOF_ALG",
+    "HANDSHAKE_VERSION",
+    "MAX_FRAME_BYTES",
+    "AccessCodeGuard",
+    "AeadChannel",
+    "AeadSession",
+    "AeadSessionLink",
+    "DataPlaneError",
+    "E2EFailure",
+    "EphemeralKeyPair",
+    "HandshakeError",
+    "SignalingClient",
+    "WireError",
+    "_recv_exactly",
+    "access_proof_message",
+    "build_access_proof",
+    "controller_handshake",
+    "derive_aead_session",
+    "find_window_by_title",
+    "force_foreground",
+    "grab_window",
+    "host_handshake",
+    "percentile_ms",
+    "read_clipboard_text",
+    "recv_json",
+    "recv_packet",
+    "relay_connect",
+    "send_json",
+    "send_packet",
+    "tail_text",
+    "tls_connect",
+    "verify_access_proof",
+    "wait_json_file",
+    "window_rect",
+    "write_clipboard_text",
+    "write_json",
+]
 
 
-# ================================ 信令客户端 ================================
+class SignalingClient(_ProductSignalingClient):
+    """信令客户端兼容壳: 支持旧的位置参数与证书指纹参数, 实现全部来自产品代码."""
 
-
-class SignalingClient:
-    """真实 TCP 信令客户端, 只实现本验证需要的最小流程."""
-
-    def __init__(self, host: str, port: int, timeout_s: float = 20.0) -> None:
-        self.host = host
-        self.port = port
-        self.timeout_s = timeout_s
-        self.sock: socket.socket | None = None
-        self.identity: DeviceIdentity | None = None
-        self.token = ""
-
-    def connect(self) -> None:
-        """建立 TCP 连接并设置超时."""
-        self.sock = socket.create_connection((self.host, self.port), timeout=10.0)
-        self.sock.settimeout(self.timeout_s)
-
-    def close(self) -> None:
-        """关闭连接, 可重复调用."""
-        if self.sock is not None:
-            try:
-                self.sock.close()
-            finally:
-                self.sock = None
-
-    def register_and_auth(self, identity: DeviceIdentity, display_name: str) -> dict[str, Any]:
-        """注册、应答挑战并认证, 返回 auth_ok 载荷."""
-        if self.sock is None:
-            raise E2EFailure("信令连接未建立")
-        self.identity = identity
-        register = build_envelope(
-            identity,
-            "register",
-            {
-                "device_id": identity.device_id,
-                "public_key": identity.public_key_b64,
-                "capabilities": ["desktop", "control", "clipboard", "file_transfer"],
-                "protocol_version": 1,
-                "display_name": display_name,
-            },
-        )
-        send_json(self.sock, register)
-        challenge = self._expect("challenge")
-        nonce = str(challenge["payload"]["nonce"])
-        auth = build_envelope(
-            identity,
-            "auth",
-            {
-                "device_id": identity.device_id,
-                "signature": identity.sign({"device_id": identity.device_id, "nonce": nonce}),
-            },
-        )
-        send_json(self.sock, auth)
-        ack = self._expect("auth_ok")
-        self.token = str(ack["payload"]["token"])
-        return ack["payload"]
-
-    def send_envelope(
+    def __init__(
         self,
-        msg_type: str,
-        payload: dict[str, Any],
-        session_id: str | None = None,
+        host: str,
+        port: int,
+        timeout_s: float = 20.0,
+        use_tls: bool = False,
+        ca_file: str | PurePath = "",
+        ca_sha256: str = "",
     ) -> None:
-        """按七字段包络发送一条消息."""
-        if self.sock is None or self.identity is None:
-            raise E2EFailure("信令未认证")
-        send_json(self.sock, build_envelope(self.identity, msg_type, payload, session_id=session_id))
-
-    def recv_until(self, msg_type: str) -> dict[str, Any]:
-        """读取直到指定类型; 遇到 error 直接失败."""
-        deadline = time.monotonic() + self.timeout_s
-        while time.monotonic() < deadline:
-            frame = recv_json(self.sock) if self.sock is not None else None
-            if frame is None:
-                raise E2EFailure(f"等待 {msg_type} 时信令连接关闭")
-            current = str(frame.get("type", ""))
-            if current == "error":
-                payload = frame.get("payload", {})
-                raise E2EFailure(f"信令返回错误: {payload.get('code')} {payload.get('message')}")
-            if current == msg_type:
-                return frame
-        raise E2EFailure(f"等待 {msg_type} 超时")
+        super().__init__(host, port, timeout_s, use_tls=use_tls, ca_file=str(ca_file or ""), sni="")
+        self.ca_sha256 = ca_sha256
 
     def _expect(self, msg_type: str) -> dict[str, Any]:
+        """兼容旧名字: 等待指定类型应答."""
         return self.recv_until(msg_type)
 
 
-# ================================ 中继数据面 ================================
+class AeadSessionLink:
+    """把产品 AeadChannel 适配成 ``AeadLink``; 只是方法转发, 不含协议逻辑."""
 
-
-def relay_connect(host: str, port: int, relay_token: str, session_id: str, role: str) -> socket.socket:
-    """接入中继数据面并完成明文握手, 返回已就绪的连接."""
-    if role not in ("publisher", "subscriber"):
-        raise E2EFailure(f"非法数据面角色: {role}")
-    sock = socket.create_connection((host, port), timeout=10.0)
-    sock.settimeout(30.0)
-    send_json(
-        sock,
-        {
-            "plane": "data",
-            "v": 1,
-            "type": "relay_hello",
-            "relay_token": relay_token,
-            "session_id": session_id,
-            "role": role,
-        },
-    )
-    hello = recv_json(sock)
-    if hello is None or hello.get("type") != "relay_ready":
-        sock.close()
-        detail = "连接关闭" if hello is None else f"{hello.get('type')} {hello.get('message', '')}"
-        raise E2EFailure(f"中继数据面握手失败: {detail}")
-    return sock
-
-
-# ================================ AEAD 通道 ================================
-
-
-class AeadChannel:
-    """在已建立的数据面连接上收发 AEAD 密文帧."""
-
-    def __init__(self, sock: socket.socket, session: AeadSession) -> None:
-        self.sock = sock
-        self.session = session
-        self.sent_frames = 0
-        self.recv_frames = 0
+    def __init__(self, channel: AeadChannel) -> None:
+        self.channel = channel
 
     def send(self, payload: dict[str, Any]) -> int:
-        """加密并发送一条 JSON, 返回发送完成时刻(纳秒)."""
-        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ciphertext = self.session.encrypt(raw)
-        send_packet(self.sock, ciphertext)
-        self.sent_frames += 1
-        return time.time_ns()
+        return self.channel.send(payload)
 
-    def recv(self) -> dict[str, Any]:
-        """接收并解密一条 JSON."""
-        body = recv_packet(self.sock)
-        if body is None:
-            raise E2EFailure("AEAD 通道被对端关闭")
-        try:
-            plaintext = self.session.decrypt(body)
-        except ValueError as exc:
-            raise E2EFailure(f"AEAD 解密失败: {exc}") from exc
-        self.recv_frames += 1
-        try:
-            value = json.loads(plaintext.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise E2EFailure(f"AEAD 明文不是合法 JSON: {exc}") from exc
-        if not isinstance(value, dict):
-            raise E2EFailure("AEAD 明文必须是 JSON 对象")
-        return value
+    def recv_raw(self) -> bytes:
+        return self.channel.recv_raw()
+
+    def close(self) -> None:
+        self.channel.close()
 
 
-def controller_handshake(sock: socket.socket, identity: DeviceIdentity) -> AeadSession:
-    """控制端发起 AEAD 握手, 并校验被控端身份签名."""
-    pair = EphemeralKeyPair.generate()
-    salt = b64encode(os.urandom(16))
-    hello: dict[str, Any] = {
-        "kind": "e2e_hello",
-        "v": 1,
-        "x25519": b64encode(pair.public_bytes),
-        "salt": salt,
-        "device_id": identity.device_id,
-        "public_key": identity.public_key_b64,
-    }
-    hello["sig"] = identity.sign(hello)
-    send_json(sock, hello)
-    ack = recv_json(sock)
-    if ack is None or ack.get("kind") != "e2e_hello_ack":
-        raise E2EFailure("被控端 AEAD 握手应答缺失")
-    unsigned = _without_signature(ack)
-    public_key = str(ack.get("public_key", ""))
-    if not verify_signature(public_key, unsigned, str(ack.get("sig", ""))):
-        raise E2EFailure("被控端 AEAD 握手签名无效")
-    if device_id_from_public_key(b64decode(public_key)) != str(ack.get("device_id", "")):
-        raise E2EFailure("被控端 device_id 与公钥不一致")
-    shared = pair.exchange(b64decode(str(ack["x25519"])))
-    return derive_aead_session(shared, b64decode(salt), initiator=True)
-
-
-def host_handshake(sock: socket.socket, identity: DeviceIdentity) -> AeadSession:
-    """被控端应答 AEAD 握手, 并校验控制端身份签名."""
-    hello = recv_json(sock)
-    if hello is None or hello.get("kind") != "e2e_hello":
-        raise E2EFailure("未收到控制端 AEAD 握手")
-    unsigned = _without_signature(hello)
-    public_key = str(hello.get("public_key", ""))
-    if not verify_signature(public_key, unsigned, str(hello.get("sig", ""))):
-        raise E2EFailure("控制端 AEAD 握手签名无效")
-    if device_id_from_public_key(b64decode(public_key)) != str(hello.get("device_id", "")):
-        raise E2EFailure("控制端 device_id 与公钥不一致")
-    pair = EphemeralKeyPair.generate()
-    ack: dict[str, Any] = {
-        "kind": "e2e_hello_ack",
-        "v": 1,
-        "x25519": b64encode(pair.public_bytes),
-        "device_id": identity.device_id,
-        "public_key": identity.public_key_b64,
-    }
-    ack["sig"] = identity.sign(ack)
-    send_json(sock, ack)
-    shared = pair.exchange(b64decode(str(hello["x25519"])))
-    return derive_aead_session(shared, b64decode(str(hello["salt"])), initiator=False)
-
-
-def _without_signature(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key != "sig"}
-
-
-# ================================ 统计 ================================
+# ================================ 计时与等待 ================================
 
 
 def percentile_ms(values: list[float], ratio: float) -> float:
@@ -321,9 +137,6 @@ def percentile_ms(values: list[float], ratio: float) -> float:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * ratio)))
     return round(ordered[index], 3)
-
-
-# ================================ 等待与文件 ================================
 
 
 def wait_json_file(path: Path, predicate: Callable[[dict[str, Any]], bool], timeout_s: float) -> dict[str, Any]:
@@ -360,60 +173,18 @@ def tail_text(path: Path, limit: int = 4000) -> str:
     return text[-limit:]
 
 
-# ================================ Windows 取证原语 ================================
+# ================================ 桌面取证原语 ================================
 
 
 def read_clipboard_text() -> str | None:
-    """读取系统剪贴板文本; 无内容或占用时返回 None."""
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    user32.GetClipboardData.restype = ctypes.c_void_p
-    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-    kernel32.GlobalLock.restype = ctypes.c_void_p
-    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    if not user32.OpenClipboard(None):
-        return None
-    try:
-        handle = user32.GetClipboardData(CF_UNICODETEXT)
-        if not handle:
-            return None
-        pointer = kernel32.GlobalLock(handle)
-        if not pointer:
-            return None
-        try:
-            return ctypes.wstring_at(pointer)
-        finally:
-            kernel32.GlobalUnlock(pointer)
-    finally:
-        user32.CloseClipboard()
+    """读取系统剪贴板文本; 无内容返回 None."""
+    text = _read_system_clipboard()
+    return text or None
 
 
 def write_clipboard_text(text: str) -> None:
-    """写回系统剪贴板文本, 失败时保持原状."""
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-    kernel32.GlobalAlloc.restype = ctypes.c_void_p
-    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-    kernel32.GlobalLock.restype = ctypes.c_void_p
-    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-    payload = text.encode("utf-16-le") + b"\x00\x00"
-    handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
-    if not handle:
-        return
-    pointer = kernel32.GlobalLock(handle)
-    if not pointer:
-        return
-    ctypes.memmove(pointer, payload, len(payload))
-    kernel32.GlobalUnlock(pointer)
-    if not user32.OpenClipboard(None):
-        return
-    try:
-        user32.EmptyClipboard()
-        user32.SetClipboardData(CF_UNICODETEXT, handle)
-    finally:
-        user32.CloseClipboard()
+    """写回系统剪贴板文本; 产品实现内部已做失败兜底."""
+    _write_system_clipboard(text)
 
 
 def find_window_by_title(keyword: str) -> int | None:

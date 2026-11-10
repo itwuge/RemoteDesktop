@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 |---|---|
 | 契约名称 | 桌面命令与端口契约 |
-| 契约版本 | v1.7 |
+| 契约版本 | v1.8 |
 | 对应设计书 | 项目设计书-项目-202611-001-20261110 |
 | 冻结日期 | 2026-11-10 |
 | 批准人 | M03 架构师 |
@@ -155,6 +155,9 @@ V1 首版范围内新增 18 个命令，原 13 个命令签名与语义不变。
 - `CLIPBOARD_TOO_LARGE`：图片超过 4 MiB 上限，取消本次同步。
 - `CLIPBOARD_EMPTY`：没有可拉取的内容。
 - `CLIPBOARD_DECODE_ERROR`：图片 base64 非法。
+- `SESSION_CHANNEL_UNAVAILABLE`：会话通道未绑定或已关闭，跨端传输无法进行；界面须区分「未接入」与「本机暂存」。
+- `SESSION_CHANNEL_TIMEOUT`：等待对端确认超时，任务判定失败并给出原因，不得长期停在进度条。
+- `CHANNEL_BACKPRESSURE`：通道背压拒绝发送，属于可重试状态；不得把背压当作完成。
 
 硬约束：
 
@@ -236,6 +239,7 @@ scope 层级：
 |---|---|---|---|---|
 | 48 | recover_transfers | `recover_transfers(destination_dir: str = "") -> CommandResult` | `{"destination": str, "recovered": int, "items": list}`，每项含 `job_id`、`source`、`destination`、`state`、`sent_bytes`、`total_bytes`、`percent`、`rate_limit_kbps`、`channel` | `TRANSFER_IO_ERROR`、`TRANSFER_PERMISSION_DENIED`、`SCOPE_INSUFFICIENT` |
 | 49 | set_transfer_scope | `set_transfer_scope(scope: str) -> CommandResult` | `{"scope": str}` | `SCOPE_INVALID` |
+| 50 | get_transfer_channel_status | `get_transfer_channel_status() -> CommandResult` | `{"bound": bool, "kind": str, "session_id": str, "encrypted": bool, "visible_to_relay": bool, "budget_kbps": int, "mode": str}` | 无 |
 
 - 进程重启后，第 32 至 36 条留下的断点日志由 48 扫描并恢复为暂停态，用户再调 35 续传；无待恢复任务时 ok 为真且 `recovered=0`。
 - 49 把当前会话授权范围写入传输门禁；装配默认 `control`，`view` 一律拒绝并返回 `SCOPE_INSUFFICIENT`。
@@ -251,6 +255,18 @@ scope 层级：
 - 第 46 条身份判定：签名不增加调用方身份参数，实现从当前登录账号取身份，要求对该墙全部设备具备 full 级管理权（设备所有者、被控端本机或 full 授权持有者）；未登录、非所有者、无 full 授权一律 `PERMISSION_DENIED`；未接线账号时默认拒绝，不得视为安全能力已就绪。
 - `validate_preview_token` 是预览流接入侧内部 API，不是用户动作，不入命令编号表；固定签名为 `validate_preview_token`，参数依次为 token、wall_id、cell、account_id，返回 `CommandResult`，失败返回 `PREVIEW_TOKEN_INVALID`；只允许预览流接入侧调用，界面不得直接调用。
 - presence 在线表由信令服务维护，命令层只经 `list_devices` 读取；信令线接入前 `presence_state` 保持 `unknown`，不得伪造在线。
+
+### 3.10 会话通道接线与缺口收口（v1.8 追加）
+
+变更依据：契约-202611-014。
+
+- 第 50 条 `mode` 取 `channel`、`local_staging`、`unbound`：`channel` 表示已绑定会话通道；`local_staging` 表示只在本机复制、不会发送到对端；`unbound` 表示未接入通道、禁止开始跨端传输。
+- 当 `mode=channel` 且 `visible_to_relay=true` 时，界面必须显示「当前走信令降级通道：文件内容与剪贴板对中继可见，未达端到端加密」；`local_staging` 必须显示「只在本机复制, 不会发送到对端」。提示不得只写进文档。
+- 第 32 至 36 条语义补充：绑定通道后任务为远端传输；`state=completed` 只在对端回 `file_result` 且 `verified=true`、摘要一致后成立，`phase=verifying` 时界面显示「等待对端校验与确认」，进度到 100% 不等于已到达。
+- 第 35 条续传在通道模式下由接收端 `.part` 实际长度决定起点，发送端不得假设已传字节。
+- 第 37 至 40 条签名不变；`status` 的 data 允许附加只读字段 `mode`、`bound`、`channel_kind`、`encrypted`、`visible_to_relay`、`pending`、`pending_action`、`pending_kind`、`pending_digest`、`confirmed`、`confirmed_digest`、`confirmed_applied`、`last_error`。`push` 在通道模式下只表示「已发送, 等待对端确认」，对端 `clipboard_ack` 前不得显示已同步。
+- 新增错误码 `SESSION_CHANNEL_UNAVAILABLE`、`SESSION_CHANNEL_TIMEOUT`、`CHANNEL_BACKPRESSURE`，语义见第七节错误码。
+- 未达端到端加密：本版降级通道只做到会话级认证与中继隔离，文件内容与剪贴板载荷对中继可见；正式数据面会话密钥接入后由同一通道接口替换，命令与界面无需改动。
 
 ## 四、长任务与确认
 
@@ -288,7 +304,7 @@ scope 层级：
 
 ## 六、版本与变更
 
-- 当前版本 v1.7，冻结日期 2026-11-10；产品对外只有 V1 首版，契约只做内部小版本增量（v1.1、v1.2、v1.3、v1.4、v1.5、v1.6、v1.7），变更记录逐条留痕。
+- 当前版本 v1.8，冻结日期 2026-11-10；产品对外只有 V1 首版，契约只做内部小版本增量（v1.1、v1.2、v1.3、v1.4、v1.5、v1.6、v1.7、v1.8），变更记录逐条留痕。
 - 破坏性变更在本文件内升次版本并在变更记录中单列移除项；不得出现对外的「v2」说法。
 - 非破坏性变更可在 v1 内进行：新增可选字段、新增命令、新增错误码。
 - 任何改动先开契约变更记录，经 M03 批准后由对应岗位落地；未进契约的实现只能作为临时实验，不得进入发布。

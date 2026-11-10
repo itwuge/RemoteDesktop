@@ -1,8 +1,9 @@
-"""protocol-v1 单测: 七字段包络、31 类消息、签名、时间窗口与服务端路由."""
+"""protocol-v1 单测: 七字段包络、33 类消息、签名、时间窗口与服务端路由."""
 
 from __future__ import annotations
 
 import copy
+import time
 
 import pytest
 
@@ -72,6 +73,7 @@ SAMPLE_PAYLOADS: dict[str, dict] = {
         "total_bytes": 2048,
         "chunk_size": 262144,
         "digest_alg": "sha256",
+        "digest": "0" * 64,
     },
     "file_accept": {"session_id": SESSION_ID, "transfer_id": "t-1", "accepted_items": ["a.bin"]},
     "file_chunk": {
@@ -86,6 +88,12 @@ SAMPLE_PAYLOADS: dict[str, dict] = {
     "file_ack": {"session_id": SESSION_ID, "transfer_id": "t-1", "file_index": 0, "acked_bytes": 6},
     "file_complete": {"session_id": SESSION_ID, "transfer_id": "t-1", "digest": "0" * 64},
     "file_abort": {"session_id": SESSION_ID, "transfer_id": "t-1", "reason": "用户取消"},
+    "file_result": {
+        "session_id": SESSION_ID,
+        "transfer_id": "t-1",
+        "verified": True,
+        "digest": "0" * 64,
+    },
     "clipboard_update": {
         "session_id": SESSION_ID,
         "kind": "text",
@@ -112,13 +120,15 @@ SAMPLE_PAYLOADS: dict[str, dict] = {
         "expires_at": "2026-11-10T12:00:00Z",
     },
     "wall_preview_revoked": {"wall_id": "wall-1", "cell": 3, "reason": "墙已关闭"},
+    "wall_bind": {"wall_id": "wall-1", "session_id": SESSION_ID},
+    "wall_bound": {"wall_id": "wall-1", "account_id": "acct-1", "bound_at": "2026-11-10T12:00:00Z"},
     "error": {"code": "PEER_OFFLINE", "message": "对端设备不在线"},
 }
 
 
 def test_message_type_count_and_payload_map() -> None:
-    """恰好 31 类消息(v1.2 presence、v1.3 传输与剪贴板、v1.4 屏幕墙), 每类都有必填字段声明."""
-    assert len(MESSAGE_TYPES) == 31
+    """恰好 34 类消息: v1.2 presence、v1.3 传输与剪贴板、v1.4 屏幕墙、v1.5 墙归属、v1.6 file_result."""
+    assert len(MESSAGE_TYPES) == 34
     assert set(REQUIRED_PAYLOAD) == set(MESSAGE_TYPES)
     assert set(ENVELOPE_FIELDS) == {"v", "type", "id", "session_id", "ts", "payload", "sig"}
 
@@ -269,7 +279,7 @@ def test_register_auth_and_route() -> None:
         },
         session_id=SESSION_ID,
     )
-    responses = server.handle(offer)
+    responses = server.handle(offer, alice.device_id)
     assert responses == [offer]
     assert server.routed[-1].to_device_id == bob.device_id
     assert server.routed[-1].msg_type == "offer"
@@ -293,7 +303,7 @@ def test_route_to_offline_peer_returns_error() -> None:
         },
         session_id=SESSION_ID,
     )
-    responses = server.handle(offer)
+    responses = server.handle(offer, alice.device_id)
     assert len(responses) == 1
     assert responses[0]["type"] == "error"
     assert responses[0]["payload"]["code"] == PEER_OFFLINE
@@ -317,17 +327,117 @@ def test_register_with_wrong_device_id_returns_auth_failed() -> None:
     assert responses[0]["payload"]["code"] == AUTH_FAILED
 
 
+def test_routed_message_replay_takes_effect_only_once() -> None:
+    """同一份 session_start 在去重窗口内重复投递, 只转发一次."""
+    deliveries: list[tuple[str, dict]] = []
+    server = InMemorySignalingServer(
+        deliver=lambda device_id, envelope: deliveries.append((device_id, envelope)) or True
+    )
+    alice = DeviceIdentity.generate()
+    bob = DeviceIdentity.generate()
+    _authenticate(server, alice)
+    _authenticate(server, bob)
+
+    start = build_envelope(
+        alice,
+        "session_start",
+        {
+            "session_id": SESSION_ID,
+            "transport_kind": "relay",
+            "quality_profile": "L0",
+            "from_device_id": alice.device_id,
+            "to_device_id": bob.device_id,
+        },
+        session_id=SESSION_ID,
+    )
+    for _ in range(3):
+        server.handle(start, alice.device_id)
+
+    forwarded = [item for item in deliveries if item[0] == bob.device_id and item[1]["type"] == "session_start"]
+    assert len(forwarded) == 1
+    assert any("REPLAY_DROPPED" in item for item in server.errors)
+
+
+def test_replay_cache_is_bounded_and_expires_with_window() -> None:
+    """去重缓存有容量上限, 且超过时间窗的旧 id 不再算重复."""
+    from rdc.signaling.server import REPLAY_CACHE_MAX, REPLAY_WINDOW_S
+
+    server = InMemorySignalingServer()
+    for index in range(REPLAY_CACHE_MAX + 10):
+        assert server._remember_message(f"id-{index}") is False
+    assert len(server.seen_messages) == REPLAY_CACHE_MAX
+
+    assert server._remember_message("id-recent") is False
+    assert server._remember_message("id-recent") is True
+    assert REPLAY_WINDOW_S > 0
+    # 队首时间戳退到窗口之外: 该 id 先被淘汰, 再次到达按首次处理
+    server.seen_messages.clear()
+    server.seen_messages["id-stale"] = 0.0
+    server.seen_messages["id-fresh"] = time.time()
+    assert server._remember_message("id-stale") is False
+    assert server._remember_message("id-fresh") is True
+
+
+def test_route_rejects_from_device_id_not_matching_authenticated_identity() -> None:
+    """from_device_id 必须等于当前连接已认证设备, 不能借他人身份路由."""
+    deliveries: list[tuple[str, dict]] = []
+    server = InMemorySignalingServer(
+        deliver=lambda device_id, envelope: deliveries.append((device_id, envelope)) or True
+    )
+    alice = DeviceIdentity.generate()
+    bob = DeviceIdentity.generate()
+    _authenticate(server, alice)
+    _authenticate(server, bob)
+
+    spoof = build_envelope(
+        bob,
+        "candidate",
+        {
+            "session_id": SESSION_ID,
+            "kind": "host",
+            "address": "127.0.0.1",
+            "port": 5000,
+            "priority": 1,
+            "from_device_id": bob.device_id,
+            "to_device_id": alice.device_id,
+        },
+        session_id=SESSION_ID,
+    )
+    responses = server.handle(spoof, alice.device_id)
+    assert responses[0]["type"] == "error"
+    assert responses[0]["payload"]["code"] == AUTH_FAILED
+    assert deliveries == []
+
+
 def test_relay_allocate_budget_and_profile() -> None:
     """中继预算由出口带宽计算, 档位与预算绑定."""
     server = InMemorySignalingServer(egress_mbps=3, overhead_ratio=0.08, max_sessions=1)
     identity = DeviceIdentity.generate()
+    peer = DeviceIdentity.generate()
+    _authenticate(server, identity)
+    _authenticate(server, peer)
+    # 预算只签发给会话参与设备: 先用 offer 建立会话再加入成员
+    offer = build_envelope(
+        identity,
+        "offer",
+        {
+            "session_id": SESSION_ID,
+            "candidates": [],
+            "media_caps": {},
+            "access_proof": "cHJvb2Y=",
+            "from_device_id": identity.device_id,
+            "to_device_id": peer.device_id,
+        },
+        session_id=SESSION_ID,
+    )
+    server.handle(offer, identity.device_id)
     request = build_envelope(
         identity,
         "relay_allocate",
-        {"session_id": SESSION_ID, "requested_kbps": 5000, "est_duration_s": 60},
+        {"session_id": SESSION_ID, "requested_kbps": 2760, "est_duration_s": 60},
         session_id=SESSION_ID,
     )
-    responses = server.handle(request)
+    responses = server.handle(request, identity.device_id)
     assert len(responses) == 1
     allocation = responses[0]
     assert allocation["type"] == "relay_allocated"

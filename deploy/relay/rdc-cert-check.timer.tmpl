@@ -1,0 +1,12 @@
+# 文件: rdc-cert-check.timer.tmpl | 用途: 每日证书巡检 | 边界: 只读
+[Unit]
+Description=Daily RDC certificate expiry check
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=rdc-cert-check.service
+
+[Install]
+WantedBy=timers.target

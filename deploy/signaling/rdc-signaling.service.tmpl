@@ -1,0 +1,65 @@
+# 文件: rdc-signaling.service.tmpl | 用途: 独立信令 systemd 单元模板 | 边界: 由 deploy.py 替换占位符后安装
+[Unit]
+Description=RDC signaling service (no relay dataplane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+# 复用 relay 的证书文件; 只加读权限组, 不复制私钥
+SupplementaryGroups=rdc
+WorkingDirectory=@PREFIX@/app
+Environment=PYTHONPATH=@PREFIX@/app
+Environment=PYTHONUNBUFFERED=1
+Environment=RDC_LOG_DIR=@LOGDIR@
+# 服务端保留来源 IP 用于事故取证(仅本地 journald, 随 256M 上限滚动, 不外传)
+Environment=RDC_LOG_REDACT_IP=0
+# 独立状态目录: 设备在线状态落库, 不写系统其它路径
+StateDirectory=rdc-signaling
+Environment=RDC_DATA_DIR=/var/lib/rdc-signaling
+ExecStart=@PYTHON@ -m rdc.signaling --config @CONFIG@
+# 证书轮换: SIGHUP 热加载 TLS 上下文, 不重启进程
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+
+# 信令无数据面, 内存与 CPU 上限比 relay 更低
+LimitNOFILE=4096
+TasksMax=256
+MemoryMax=256M
+CPUQuota=100%
+
+# 最小权限: 只读证书与配置, 只写日志目录
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@LOGDIR@
+ReadOnlyPaths=/etc/rdc-relay/tls
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rdc-signaling
+
+[Install]
+WantedBy=multi-user.target

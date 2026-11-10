@@ -52,12 +52,29 @@ from PySide6.QtWidgets import (
 
 from e2e_common import (
     AeadChannel,
+    AeadSessionLink,
     E2EFailure,
     SignalingClient,
+    build_access_proof,
     controller_handshake,
     relay_connect,
 )
-from rdc.crypto.identity import DeviceIdentity, b64encode
+from rdc.commands import clipboard as clipboard_commands
+from rdc.commands import transfer as transfer_commands
+from rdc.commands.media_caps import default_media_caps, negotiate_media
+from rdc.crypto.identity import DeviceIdentity
+from rdc.files.service import default_destination_root
+from rdc.media.frame import (
+    MAGIC as FRAME_MAGIC,
+)
+from rdc.media.frame import (
+    VERSION_V2,
+    VideoFrame,
+    decode_v1,
+    decode_v2,
+)
+from rdc.session.aead import AeadSessionChannel
+from rdc.session.desktop import DesktopSessionBinding
 
 DEFAULT_ADDRESS = "192.168.37.132"
 DEFAULT_PORT = "27888"
@@ -188,6 +205,9 @@ class ConnectWorker(QThread):
     status_changed = Signal(str, str)
     frame_ready = Signal(QImage)
     remote_ready = Signal(int, int)
+    session_ready = Signal()
+    clipboard_applied = Signal(str, str)
+    files_received = Signal(dict)
 
     def __init__(self, address: str, port: int, device_id: str, access_code: str) -> None:
         super().__init__()
@@ -202,9 +222,13 @@ class ConnectWorker(QThread):
         self.channel: AeadChannel | None = None
         self.sock: socket.socket | None = None
         self.client: SignalingClient | None = None
+        self.adapter: AeadSessionChannel | None = None
+        self.binding: DesktopSessionBinding | None = None
+        self.decoder: av.CodecContext | None = None
         self.frames = 0
         self.failed_reason = ""
         self.established = False
+        self.frame_version = VERSION_V2
 
     # ------------------------------------------------------------------ 线程主体
     def run(self) -> None:
@@ -237,8 +261,13 @@ class ConnectWorker(QThread):
                 "from_device_id": identity.device_id,
                 "to_device_id": self.device_id,
                 "candidates": [{"kind": "relay", "address": self.address, "port": self.port, "priority": 1}],
-                "media_caps": {"codecs": ["h264"], "max_width": 1920, "max_height": 1080, "max_fps": 30},
-                "access_proof": b64encode(self.access_code.encode("utf-8")),
+                "media_caps": default_media_caps(),
+                "access_auth": build_access_proof(
+                    self.access_code,
+                    self.session_id,
+                    identity.device_id,
+                    self.device_id,
+                ),
             },
             session_id=self.session_id,
         )
@@ -248,6 +277,12 @@ class ConnectWorker(QThread):
             reason = str(payload.get("reason") or "被控端拒绝了本次连接")
             raise E2EFailure(reason)
         peer = str(payload.get("from_device_id") or self.device_id)
+        self.frame_version, degrade_reason = negotiate_media(payload.get("media_caps"), role="controller")
+        if degrade_reason:
+            LOGGER.warning("帧封装降级: %s", degrade_reason)
+            self.status_changed.emit("connecting", f"{degrade_reason}; 画面使用 v1 兼容封装")
+        else:
+            self.status_changed.emit("connecting", "帧封装 v2 已协商生效")
         self.status_changed.emit("connecting", "连接码正确, 正在建立画面通道 …")
         self.client.send_envelope(
             "session_start",
@@ -269,14 +304,37 @@ class ConnectWorker(QThread):
         token = str(allocated.get("payload", {}).get("relay_token", ""))
         self.sock = relay_connect(self.address, self.port, token, self.session_id, "subscriber")
         self.sock.settimeout(300.0)
-        session = controller_handshake(self.sock, identity)
+        session = controller_handshake(self.sock, identity, self.session_id, self.device_id)
         channel = AeadChannel(self.sock, session)
         self.channel = channel
+        self.decoder = av.CodecContext.create("h264", "r")
+        self.decoder.open()
+        self.adapter = AeadSessionChannel(
+            AeadSessionLink(channel),
+            session_id=self.session_id,
+            role="controller",
+            budget_kbps=int(allocated.get("payload", {}).get("budget_kbps") or REQUEST_KBPS),
+            on_control=self._on_control,
+        )
+        self.adapter.open()
+        self.binding = DesktopSessionBinding(
+            self.adapter,
+            transfer_service=transfer_commands.get_service(),
+            clipboard_service=clipboard_commands.get_service(),
+            destination_root=default_destination_root(),
+            on_files_received=lambda payload: self.files_received.emit(dict(payload)),
+            on_clipboard_apply=lambda kind, content: self.clipboard_applied.emit(kind, content),
+        )
         sender = threading.Thread(target=self._send_loop, daemon=True, name="control-sender")
         sender.start()
         self.established = True
-        self.status_changed.emit("connected", "已连接, 正在等待 Ubuntu 桌面画面 …")
-        self._receive_loop(channel)
+        self.session_ready.emit()
+        self.status_changed.emit("connected", f"已连接, 帧封装 v{self.frame_version}, 正在等待 Ubuntu 桌面画面 …")
+        while not self.stop_event.wait(0.2):
+            if self.failed_reason:
+                break
+        if self.failed_reason:
+            raise E2EFailure(self.failed_reason)
 
     def _keepalive_loop(self) -> None:
         """每 10 秒发一次心跳, 避免信令连接空闲超时导致会话被回收."""
@@ -288,26 +346,35 @@ class ConnectWorker(QThread):
             with contextlib.suppress(OSError, E2EFailure):
                 self.client.send_envelope("heartbeat", {"session_id": "", "seq": seq})
 
-    def _receive_loop(self, channel: AeadChannel) -> None:
-        decoder = av.CodecContext.create("h264", "r")
-        decoder.open()
-        while not self.stop_event.is_set():
-            message = channel.recv()
-            kind = str(message.get("kind", ""))
-            if kind == "video":
-                self._on_video(decoder, message)
-            elif kind == "ready":
-                self.remote_ready.emit(int(message.get("w", 0)), int(message.get("h", 0)))
-            elif kind == "error":
-                raise E2EFailure(str(message.get("reason") or "被控端返回错误"))
+    def _on_control(self, item: bytes | dict[str, Any]) -> None:
+        """适配层读线程回调: 二进制是视频帧, JSON 是握手后的控制消息."""
+        if isinstance(item, bytes):
+            if item[:2] == FRAME_MAGIC and self.decoder is not None:
+                self._on_video(self.decoder, decode_v2(item))
+            return
+        kind = str(item.get("kind", ""))
+        if kind == "video":
+            # v1 兼容: 老被控端仍是 JSON + base64, 只在协商降级后出现
+            if self.decoder is not None:
+                self._on_video(self.decoder, decode_v1(item))
+        elif kind == "ready":
+            self.remote_ready.emit(int(item.get("w", 0)), int(item.get("h", 0)))
+        elif kind == "error":
+            self.failed_reason = str(item.get("reason") or "被控端返回错误")
+            self.stop_event.set()
 
-    def _on_video(self, decoder: av.CodecContext, message: dict[str, Any]) -> None:
+    def pump_clipboard(self) -> int:
+        """界面线程周期调用; 与页面共用同一个剪贴板服务实例, 消费即处理不丢帧."""
+        if self.binding is None:
+            return 0
+        return self.binding.pump()
+
+    def _on_video(self, decoder: av.CodecContext, video: VideoFrame) -> None:
         try:
-            raw = base64.b64decode(str(message.get("data", "")).encode("ascii"), validate=True)
-            frames = decoder.decode(av.Packet(raw))
+            frames = decoder.decode(av.Packet(video.payload))
         except (av.error.FFmpegError, ValueError):
             return
-        expected = (int(message.get("w") or 0), int(message.get("h") or 0))
+        expected = (video.width, video.height)
         for frame in frames:
             image = _frame_to_image(frame, expected)
             if image is None:
@@ -345,6 +412,12 @@ class ConnectWorker(QThread):
 
     def _cleanup(self) -> None:
         self.stop_event.set()
+        if self.binding is not None:
+            self.binding.close()
+            self.binding = None
+        if self.adapter is not None:
+            self.adapter.close()
+            self.adapter = None
         if self.sock is not None:
             with contextlib.suppress(OSError):
                 self.sock.close()
@@ -365,6 +438,9 @@ class ControllerWindow(QMainWindow):
         self.selftest_text = ""
         self.evidence_dir: Path | None = None
         self.selftest_done: Callable[[bool, str], None] | None = None
+        self.clipboard_timer = QTimer(self)
+        self.clipboard_timer.setInterval(100)
+        self.clipboard_timer.timeout.connect(self._poll_clipboard)
 
         central = QWidget(self)
         root = QVBoxLayout(central)
@@ -460,6 +536,9 @@ class ControllerWindow(QMainWindow):
         self.worker.status_changed.connect(self._on_status)
         self.worker.frame_ready.connect(self._on_frame)
         self.worker.remote_ready.connect(self._on_remote_ready)
+        self.worker.session_ready.connect(self._on_session_ready)
+        self.worker.clipboard_applied.connect(self._on_clipboard_applied)
+        self.worker.files_received.connect(self._on_files_received)
         self.worker.finished.connect(self._on_worker_finished)
         self.connect_button.setEnabled(False)
         self.disconnect_button.setEnabled(True)
@@ -470,6 +549,7 @@ class ControllerWindow(QMainWindow):
     def _on_disconnect(self) -> None:
         if self.worker is None:
             return
+        self.clipboard_timer.stop()
         self._set_status("closed", "正在断开 …")
         self.worker.request_stop()
 
@@ -477,6 +557,7 @@ class ControllerWindow(QMainWindow):
         self._set_status(kind, text)
         LOGGER.info("状态 %s: %s", kind, text)
         if kind in {"closed", "failed"}:
+            self.clipboard_timer.stop()
             self.connect_button.setEnabled(True)
             self.disconnect_button.setEnabled(False)
             if self.selftest_text and self.worker is not None and self.worker.frames == 0:
@@ -487,6 +568,29 @@ class ControllerWindow(QMainWindow):
     def _on_remote_ready(self, width: int, height: int) -> None:
         if width > 0 and height > 0:
             self.remote_size = (width, height)
+
+    def _on_session_ready(self) -> None:
+        """会话建立后开始推进剪贴板; 与页面读取的是同一个服务实例."""
+        self.clipboard_timer.start()
+
+    def _poll_clipboard(self) -> None:
+        if self.worker is not None:
+            self.worker.pump_clipboard()
+
+    def _on_clipboard_applied(self, kind: str, content: str) -> None:
+        """对端剪贴板落到本机; 界面线程调用, 避免跨线程碰 QClipboard."""
+        board = QApplication.clipboard()
+        if kind == "text":
+            board.setText(content)
+            return
+        image = QImage()
+        if image.loadFromData(base64.b64decode(content.encode("ascii")), "PNG"):
+            board.setImage(image)
+
+    def _on_files_received(self, payload: dict[str, Any]) -> None:
+        files = [str(item) for item in payload.get("files") or []]
+        self._set_status("connected", f"已接收 {len(files)} 个文件到 {default_destination_root()}")
+        LOGGER.info("接收文件完成: %s", files)
 
     def _on_worker_finished(self) -> None:
         """线程真正收尾后释放引用, 保证下次点「连接」不会被旧线程挡住."""

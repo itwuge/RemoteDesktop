@@ -1,0 +1,13 @@
+# 文件: cert-check.timer | 用途: 每日 03:15 触发证书巡检 | 边界: 只触发 oneshot, 不常驻
+[Unit]
+Description=Daily RDC certificate expiry check
+
+[Timer]
+# 每天 03:15 执行; 机器关机错过则开机后补跑
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=rdc-cert-check.service
+
+[Install]
+WantedBy=timers.target

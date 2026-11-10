@@ -85,6 +85,29 @@ def test_start_connection_rejects_bad_code(service: CommandService) -> None:
     assert result.error_code == ACCESS_CODE_INVALID
 
 
+def test_start_connection_passwordless_trusted_device(service: CommandService) -> None:
+    """同账号受信设备空口令由准入函数放行; 未受信或无法判定仍要求 6 位口令."""
+    from rdc.accounts.service import AccountService
+    from rdc.commands import accounts as account_commands
+
+    account_service = AccountService()
+    account_service.register_device(PEER_ID, "测试对端")
+    assert account_service.register_account("peer@example.com", "secret-1").ok
+    assert account_service.login_account("peer@example.com", "secret-1").ok
+    assert account_service.bind_device(PEER_ID, "123456").ok
+    assert account_service.set_trust_policy(PEER_ID, False).ok
+    account_commands.configure(account_service)
+    try:
+        started = api.start_connection(PEER_ID, "")
+        assert started.ok is True
+        assert started.data is not None
+    finally:
+        account_commands.configure(AccountService())
+
+    untrusted = api.start_connection(PEER_ID, "")
+    assert untrusted.ok is False
+
+
 def test_connection_task_lifecycle(service: CommandService) -> None:
     """连接任务返回句柄, 进度可查, 可取消."""
     started = api.start_connection(PEER_ID, "123456")
@@ -96,11 +119,21 @@ def test_connection_task_lifecycle(service: CommandService) -> None:
 
     progress = api.get_connection_progress(task_id)
     assert progress.ok is True
-    assert progress.data == {"completed": 0, "total": 4, "status": "pending", "cancelable": True}
+    # 契约变更记录 018-A8: 连接任务带 state, 待执行视为 connecting
+    assert progress.data == {
+        "completed": 0,
+        "total": 4,
+        "status": "pending",
+        "cancelable": True,
+        "state": "connecting",
+    }
 
     canceled = api.cancel_connection(task_id)
     assert canceled.ok is True
-    assert api.get_connection_progress(task_id).data["status"] == "canceled"
+    canceled_progress = api.get_connection_progress(task_id)
+    assert canceled_progress.data["status"] == "canceled"
+    assert canceled_progress.data["state"] == "failed"
+    assert canceled_progress.data["reason"] == "连接已取消"
     assert api.cancel_connection(task_id).ok is False
     assert api.get_connection_progress("missing").error_code == TASK_NOT_FOUND
 
@@ -117,12 +150,15 @@ def test_session_commands(service: CommandService) -> None:
     session = service.add_session(PEER_ID, transport_kind="direct", quality_profile="auto")
     status = api.get_session_status(session.session_id)
     assert status.ok is True
-    assert status.data == {
-        "state": "connected",
+    assert status.data is not None
+    assert {key: value for key, value in status.data.items() if key != "started_at"} == {
+        "state": "streaming",
         "transport_kind": "direct",
         "quality_profile": "1080p60",
         "peer_device_id": PEER_ID,
     }
+    # 契约变更记录 018-G7: 会话提供 started_at, 界面据此显示已连接时长
+    assert status.data["started_at"]
     assert len(api.list_sessions().data["items"]) == 1
 
     applied = api.apply_quality_profile(session.session_id, "1080p30")

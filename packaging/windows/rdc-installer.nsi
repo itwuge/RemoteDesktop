@@ -3,8 +3,8 @@
 ; 所属目录    : packaging/windows/
 ; 文件用途    : Windows 安装包脚本; 安装到当前用户目录或用户选择目录, 建快捷方式, 可卸载
 ; 架构定位    : 发布配置; 由 scripts/build_installer.py 参数化调用
-; 核心功能    : 复制无控制台产物; 开始菜单与桌面快捷方式; 卸载注册项; 静默安装支持
-; 职责边界    : 不修改系统服务; 不写开机启动; 不删除用户配置与日志
+; 核心功能    : 复制无控制台产物; 开始菜单与桌面快捷方式; 卸载注册项与开机自启项; 静默安装支持
+; 职责边界    : 不修改系统服务; 安装时不写开机启动(由程序首次启动写入); 不删除用户配置与日志
 ; ==========================================================================================
 
 Unicode true
@@ -24,6 +24,8 @@ Unicode true
 !define APP_EXE "rdc-desktop.exe"
 !define APP_PUBLISHER "RDC"
 !define APP_REG_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\RDC"
+!define APP_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
+!define APP_RUN_VALUE "RDC 远程桌面"
 !define APP_MUTEX "RDC.Desktop.Setup"
 
 ; 图标由 scripts/build_installer.py 通过 /DICON_FILE= 传入, 与 exe 内嵌图标同源
@@ -46,7 +48,7 @@ VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=2052 "ProductName" "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "CompanyName" "${APP_PUBLISHER}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"
-VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (C) 2026 RDC"
+VIAddVersionKey /LANG=2052 "LegalCopyright" "版权所有 (C) 2026 RDC"
 VIAddVersionKey /LANG=2052 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=2052 "ProductVersion" "${VERSION}"
 
@@ -111,6 +113,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\${APP_NAME}"
 
   SetRegView 64
+  DeleteRegValue HKCU "${APP_RUN_KEY}" "${APP_RUN_VALUE}"
   DeleteRegKey HKCU "${APP_REG_KEY}"
   RMDir /r "$INSTDIR"
 SectionEnd

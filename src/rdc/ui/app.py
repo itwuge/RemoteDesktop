@@ -17,14 +17,22 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from rdc.commands import accounts as accounts_commands
-from rdc.core import crashguard, runtime
+from rdc.commands import settings as settings_commands
+from rdc.core import autostart, crashguard, runtime
 from rdc.core.logging import configure as configure_logging
+from rdc.core.logging import log_event
 from rdc.ui import icons
 from rdc.ui.main_window import MainWindow
 from rdc.ui.theme import apply_theme
+from rdc.ui.tray import TrayController, tray_available
 from rdc.version import __version__
 
-__all__ = ["MainWindow", "main"]
+__all__ = ["MainWindow", "main", "should_start_in_tray"]
+
+
+def should_start_in_tray(arguments: list[str]) -> bool:
+    """开机自启命令行带 --autostart 时静默进托盘."""
+    return autostart.AUTOSTART_FLAG in arguments
 
 
 def _claim_taskbar_identity() -> None:
@@ -44,12 +52,16 @@ def main(argv: list[str] | None = None) -> int:
     _claim_taskbar_identity()
     arguments = sys.argv if argv is None else argv
     runtime.bootstrap_runtime()
-    configure_logging()
+    local_config = runtime.load_config()
+    configure_logging(str(local_config.get("log_level") or "INFO"))
     crashguard.ensure_stdio()
     crashguard.install_exception_hooks()
     fault_log = crashguard.enable_faulthandler()
     crashguard.log_session_start(version=__version__, fault_log=str(fault_log))
     storage_warning = accounts_commands.configure_persistent_store()
+    autostart_result = settings_commands.ensure_autostart_default()
+    if not autostart_result.ok:
+        log_event("ui.app", "autostart.default_failed", level="WARNING", message=autostart_result.message)
 
     app = QApplication.instance()
     if app is None or not isinstance(app, QApplication):
@@ -59,8 +71,18 @@ def main(argv: list[str] | None = None) -> int:
     app.setWindowIcon(icons.app_icon())
     apply_theme(app)
     window = MainWindow()
-    window.show()
-    if storage_warning:
+    silent = should_start_in_tray(arguments)
+    if silent and tray_available():
+        window.set_close_to_tray(True)
+        TrayController(window).show()
+        log_event("ui.app", "autostart.silent_tray")
+    else:
+        window.show()
+        if silent:
+            log_event("ui.app", "autostart.tray_unavailable", level="WARNING")
+    if storage_warning and silent:
+        log_event("ui.app", "storage.warning", level="WARNING", message=storage_warning)
+    elif storage_warning:
         QMessageBox.warning(window, "RDC 远程桌面", storage_warning)
     crashguard.start_heartbeat(app)
     QTimer.singleShot(800, window.start_silent_update_check)

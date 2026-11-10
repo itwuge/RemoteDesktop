@@ -40,5 +40,10 @@ host.txt
 # 生成证据（含本机路径与二进制产物，保留在 D:\RDC-Build 与本地 evidence/）
 evidence/
 
+# A6 复现用测试设备私钥：只供验收线本地使用，用完删除，任何情况下不入库
+evidence/relay-a6-fixtures/
+evidence/wall-bind/fixtures.json
+evidence/wall-bind-*/
+
 # 第三方登录窗口截图，可能包含账号或连接码
 todesk-login-*.png

@@ -3,8 +3,8 @@
 // 所属目录    : android/app/src/main/java/com/rdc/remote/
 // 文件用途    : 控制端会话窗: 远端画面容器、悬浮手势条、状态条、横竖屏切换与底部抽屉
 // 架构定位    : Android 控制端界面层, 只呈现画面与转发输入, 不承载会话业务逻辑
-// 核心功能    : SurfaceView 承载远端画面; 触摸/键盘转契约输入事件; 旋转不重建界面只迁移布局;
-//               竖屏为画面 + 信息卡 + 操作区, 横屏为全屏画面 + 悬浮手势条 + 底部抽屉
+// 核心功能    : TextureView 按等比铺满呈现远端画面; 触摸/键盘转契约输入事件; 旋转不重建界面只迁移布局;
+//               竖屏为画面 + 信息卡 + 操作区, 横屏为沉浸全屏画面 + 轻触唤出的浮条 + 底部抽屉
 // 职责边界    : 不建连、不解码协议、不决策降级; 所有命令走 ControlContract; 不读写系统剪贴板
 // 运行环境    : Android 10 (API 29) 至 Android 14 (API 34)
 // 依赖关系    : RemoteRenderer、ControlContract、InputEvent、RdcTheme、RdcLog
@@ -13,21 +13,25 @@
 package com.rdc.remote
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
-import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
-import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.ScaleGestureDetector
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
@@ -38,18 +42,22 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.util.Locale
 
 class SessionActivity : AppCompatActivity() {
 
     private lateinit var root: FrameLayout
     private lateinit var content: LinearLayout
     private lateinit var remoteBox: AspectFrameLayout
-    private lateinit var surfaceView: SurfaceView
+    private lateinit var videoView: TextureView
+    private var videoSurface: Surface? = null
+    private var attachedTexture: SurfaceTexture? = null
     private lateinit var placeholder: TextView
     private lateinit var topRow: LinearLayout
     private lateinit var peerChip: TextView
@@ -67,6 +75,8 @@ class SessionActivity : AppCompatActivity() {
     private lateinit var chipRow: LinearLayout
 
     private lateinit var gestureBar: LinearLayout
+    private lateinit var scaleLabel: TextView
+    private lateinit var topLeftItem: TextView
     private lateinit var qualitySheet: LinearLayout
     private lateinit var transferSheet: LinearLayout
     private lateinit var imeSink: EditText
@@ -83,11 +93,66 @@ class SessionActivity : AppCompatActivity() {
     private var peerId: String = ""
     private var offlinePreview = false
 
+    @Volatile
     private var remoteWidth = 1920
+    @Volatile
     private var remoteHeight = 1080
-    private var landscape = false
-    private var immersive = false
+
+    /** 是否已收到过远端画面帧; 决定占位层是否让位给解码画面. */
+    @Volatile
+    private var firstFrameSeen = false
+
+    /** 双指拖动累积量, 用于全屏原始像素下的视口平移. */
+    private var multiTouchActive = false
+    private var lastMultiX = 0f
+    private var lastMultiY = 0f
+
+    /** 全屏缩放倍率(1.0 = 原始像素)与视口偏移; 退出全屏时归零重算. */
+    private var viewportScale = 0f
+    private var viewportPanX = 0f
+    private var viewportPanY = 0f
+
+    /** 双指缩放与双击还原; 单指事件仍直通远端鼠标操作. */
+    private val scaleDetector: ScaleGestureDetector by lazy {
+        ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val state = currentViewport()
+                applyViewport(
+                    ViewportMath.zoomAt(
+                        state,
+                        state.scale * detector.scaleFactor,
+                        detector.focusX,
+                        detector.focusY,
+                    ),
+                )
+                return true
+            }
+        })
+    }
+
+    private val doubleTapDetector: GestureDetector by lazy {
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                resetViewport()
+                return true
+            }
+        })
+    }
+
+    private var fullscreen = false
     private var sheetOpen: String? = null
+
+    /** 上一次输出的铺满日志, 避免布局回调重复刷屏. */
+    private var lastViewportLog = ""
+
+    /** 竖屏操作区按钮与横屏浮条条目, 供真机自动化按坐标点击时读取. */
+    private val actionButtons = mutableListOf<TextView>()
+    private val gestureItems = mutableListOf<View>()
+    private var lastActionLog = ""
+    private var lastBarLog = ""
+
+    /** 浮条自动淡出计时. */
+    private val hideBarRunnable = Runnable { fadeOutFloatingBar() }
 
     /** 文件传输示意状态; 只驱动界面, 不产生真实读写. */
     private var transferProgress = 0
@@ -129,18 +194,23 @@ class SessionActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 与主界面共用外观设置, 构建界面前先定好深/浅色
+        RdcColor.dark = AppPrefs.darkTheme(this)
         sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: ""
         profile = intent.getStringExtra(EXTRA_PROFILE) ?: "auto"
         offlinePreview = intent.getBooleanExtra(EXTRA_OFFLINE_PREVIEW, false)
         peerId = intent.getStringExtra(EXTRA_PEER_ID) ?: ""
         remoteWidth = intent.getIntExtra(EXTRA_REMOTE_WIDTH, 1920)
         remoteHeight = intent.getIntExtra(EXTRA_REMOTE_HEIGHT, 1080)
-        landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         clipboardSyncEnabled = AppPrefs.clipboardSync(this)
 
         clipboardLastStatus = getString(R.string.session_clipboard_idle)
         buildViews()
-        applyOrientationLayout()
+        if (!offlinePreview) {
+            placeholder.text = "已连接，等待首帧画面…"
+            LanSession.setVideoSink { frame -> onVideoFrame(frame) }
+        }
+        applySessionLayout()
         applySheet()
         refreshTransfer()
         refreshClipboard()
@@ -150,8 +220,8 @@ class SessionActivity : AppCompatActivity() {
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
-                    if (landscape) {
-                        backToPortrait()
+                    if (fullscreen) {
+                        exitFullscreen()
                     } else {
                         finishSession()
                     }
@@ -162,14 +232,17 @@ class SessionActivity : AppCompatActivity() {
         RdcLog.info(
             "Session",
             "page_ready",
-            "session=$sessionId profile=$profile offline=$offlinePreview " +
-                "orientation=${if (landscape) "landscape" else "portrait"} wired=${ControlContract.WIRED}",
+            "session=$sessionId profile=$profile offline=$offlinePreview orientation=portrait wired=${ControlContract.WIRED}",
         )
     }
 
     override fun onResume() {
         super.onResume()
         ticker.post(metricsTick)
+        // 从后台或系统弹窗回来时, 全屏仍保持隐藏系统栏
+        if (fullscreen) {
+            setSystemBarsHidden(true)
+        }
         if (transferRunning && !transferPaused && transferAvailable()) {
             transferHandler.postDelayed(transferTick, TRANSFER_TICK_MS)
         }
@@ -177,14 +250,19 @@ class SessionActivity : AppCompatActivity() {
 
     override fun onPause() {
         ticker.removeCallbacks(metricsTick)
+        ticker.removeCallbacks(hideBarRunnable)
         transferHandler.removeCallbacks(transferTick)
         super.onPause()
     }
 
     override fun onDestroy() {
         ticker.removeCallbacks(metricsTick)
+        ticker.removeCallbacks(hideBarRunnable)
         transferHandler.removeCallbacks(transferTick)
+        LanSession.setVideoSink(null)
         renderer.release()
+        videoSurface?.release()
+        videoSurface = null
         RdcLog.info("Session", "page_destroyed", "session=$sessionId")
         super.onDestroy()
     }
@@ -199,8 +277,8 @@ class SessionActivity : AppCompatActivity() {
             setBackgroundColor(RdcColor.SURFACE)
             setPadding(0, 0, 0, 0)
         }
-        surfaceView = SurfaceView(this).apply {
-            holder.addCallback(surfaceCallback)
+        videoView = TextureView(this).apply {
+            surfaceTextureListener = textureListener
             // 读屏把远端画面识别为一块可触摸区域, 而不是空白
             contentDescription = getString(R.string.a11y_remote_surface)
             setOnTouchListener { view, event ->
@@ -209,38 +287,39 @@ class SessionActivity : AppCompatActivity() {
                 }
                 onRemoteTouch(event)
             }
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyViewportMatrix() }
         }
         placeholder = labelView(getString(R.string.session_placeholder), 12f, RdcColor.FAINT, Gravity.CENTER)
 
         peerChip = TextView(this).apply {
             text = getString(R.string.session_peer_format, shortPeer())
-            textSize = 9.5f
-            setTextColor(Color.parseColor("#DBE4F0"))
+            textSize = RdcText.TINY
+            setTextColor(RdcColor.MEDIA_TEXT)
             setPadding(dp(8), dp(5), dp(8), dp(5))
             roundedBackground(RdcColor.OVERLAY, 7, OVERLAY_BORDER)
             typeface = Typeface.MONOSPACE
         }
         topMetrics = TextView(this).apply {
-            text = getString(R.string.session_metrics_placeholder, profile)
-            textSize = 9f
-            setTextColor(Color.parseColor("#C7D3E2"))
+            text = getString(R.string.session_metrics_placeholder, qualityLabel(profile))
+            textSize = RdcText.MICRO
+            setTextColor(RdcColor.MEDIA_TEXT)
             setPadding(dp(8), dp(5), dp(8), dp(5))
             roundedBackground(RdcColor.OVERLAY, 6, OVERLAY_BORDER)
             typeface = Typeface.MONOSPACE
             visibility = View.GONE
         }
         metricPill = TextView(this).apply {
-            text = getString(R.string.session_metrics_placeholder, profile)
-            textSize = 9f
-            setTextColor(Color.parseColor("#C7D3E2"))
+            text = getString(R.string.session_metrics_placeholder, qualityLabel(profile))
+            textSize = RdcText.MICRO
+            setTextColor(RdcColor.MEDIA_TEXT)
             setPadding(dp(8), dp(4), dp(8), dp(4))
             roundedBackground(RdcColor.OVERLAY, 6, OVERLAY_BORDER)
             typeface = Typeface.MONOSPACE
         }
         remoteLabel = TextView(this).apply {
             text = getString(R.string.session_remote_label)
-            textSize = 8.5f
-            setTextColor(Color.parseColor("#8FA0B4"))
+            textSize = RdcText.MICRO
+            setTextColor(RdcColor.MEDIA_TEXT_STRONG)
         }
 
         topRow = LinearLayout(this).apply {
@@ -262,7 +341,7 @@ class SessionActivity : AppCompatActivity() {
         )
         topRow.addView(topMetrics)
 
-        remoteBox.addView(surfaceView, matchParent())
+        remoteBox.addView(videoView, matchParent())
         remoteBox.addView(placeholder, matchParent())
         remoteBox.addView(
             topRow,
@@ -364,7 +443,7 @@ class SessionActivity : AppCompatActivity() {
         titleRow.addView(titleColumn)
         stateBadge = TextView(this).apply {
             text = getString(R.string.session_badge_offline)
-            textSize = 9f
+            textSize = RdcText.MICRO
             setTextColor(RdcColor.WARN)
             setPadding(dp(8), dp(4), dp(8), dp(4))
             roundedBackground(RdcColor.PANEL_2, 999, RdcColor.LINE)
@@ -425,8 +504,8 @@ class SessionActivity : AppCompatActivity() {
         }
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row1.addView(
-            actionButton(getString(R.string.session_landscape_fullscreen), RdcColor.ACCENT, Color.WHITE) {
-                enterLandscape()
+            actionButton(getString(R.string.session_fullscreen), RdcColor.ACCENT, Color.WHITE) {
+                enterFullscreen()
             },
             actionParams(0),
         )
@@ -454,14 +533,29 @@ class SessionActivity : AppCompatActivity() {
         )
         grid.addView(row1)
         grid.addView(row2)
+        grid.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> logActionButtons() }
         return grid
+    }
+
+    /** 记录竖屏操作区按钮的屏幕坐标与可用状态, 真机自动化据此点击. */
+    private fun logActionButtons() {
+        val parts = actionButtons.map { button ->
+            val loc = IntArray(2)
+            button.getLocationOnScreen(loc)
+            "${button.text}=${loc[0]},${loc[1]},${button.width}x${button.height},enabled=${button.isEnabled}"
+        }
+        val line = parts.joinToString("|")
+        if (line.isNotBlank() && line != lastActionLog) {
+            lastActionLog = line
+            RdcLog.info("Session", "action_buttons", line)
+        }
     }
 
     private fun actionButton(text: String, background: Int, textColor: Int, onClick: () -> Unit): TextView =
         actionView(text, 11.5f, textColor, background, 10, RdcColor.LINE_STRONG, 39).apply {
-            layoutParams = LinearLayout.LayoutParams(0, dp(39), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, RdcMetrics.BUTTON, 1f)
             setOnClickListener { onClick() }
-        }
+        }.also { actionButtons += it }
 
     private fun actionParams(startMargin: Int) = LinearLayout.LayoutParams(
         0,
@@ -472,8 +566,8 @@ class SessionActivity : AppCompatActivity() {
     private fun roundButton(text: String, onClick: () -> Unit): TextView =
         TextView(this).apply {
             this.text = text
-            textSize = 15f
-            setTextColor(Color.parseColor("#DBE4F0"))
+            textSize = RdcText.HEADLINE
+            setTextColor(RdcColor.MEDIA_TEXT)
             gravity = Gravity.CENTER
             isClickable = true
             isFocusable = true
@@ -494,7 +588,7 @@ class SessionActivity : AppCompatActivity() {
         cell.addView(labelView(label, 9f, RdcColor.FAINT))
         val value = TextView(this).apply {
             text = "—"
-            textSize = 12f
+            textSize = RdcText.BODY
             setTextColor(RdcColor.TEXT)
             typeface = Typeface.MONOSPACE
             setPadding(0, dp(2), 0, 0)
@@ -506,8 +600,8 @@ class SessionActivity : AppCompatActivity() {
 
     private fun qualityChip(item: String): TextView =
         TextView(this).apply {
-            text = item
-            textSize = 10f
+            text = qualityLabel(item)
+            textSize = RdcText.TINY
             setTextColor(RdcColor.MUTED)
             setPadding(dp(9), dp(5), dp(9), dp(5))
             isClickable = true
@@ -546,7 +640,7 @@ class SessionActivity : AppCompatActivity() {
         val head = cardHead(getString(R.string.session_transfer_title))
         val badge = TextView(this).apply {
             text = getString(R.string.session_transfer_state_waiting)
-            textSize = 9f
+            textSize = RdcText.MICRO
             setTextColor(RdcColor.MUTED)
             setPadding(dp(8), dp(3), dp(8), dp(3))
             roundedBackground(RdcColor.PANEL_2, 999, RdcColor.LINE)
@@ -657,7 +751,7 @@ class SessionActivity : AppCompatActivity() {
 
     private fun smallButton(text: String, onClick: () -> Unit): TextView =
         actionView(text, 10f, RdcColor.TEXT, RdcColor.PANEL_3, 8, RdcColor.LINE_STRONG, 30).apply {
-            layoutParams = LinearLayout.LayoutParams(0, dp(30), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, RdcMetrics.BUTTON_SMALL, 1f)
             setOnClickListener { onClick() }
         }
 
@@ -669,34 +763,60 @@ class SessionActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- 横屏手势条与抽屉
 
+    /** 全屏浮条: 轻触画面唤出, 3 秒后自动淡出; 不含任何常驻控件. */
     private fun buildGestureBar(): LinearLayout {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), dp(4), dp(6), dp(4))
-            roundedBackground(Color.parseColor("#D91A1D22"), 999, RdcColor.LINE_STRONG)
+            roundedBackground(RdcColor.OVERLAY, 999, RdcColor.LINE_STRONG)
         }
-        bar.addView(gestureItem(getString(R.string.session_back)) { backToPortrait() })
-        bar.addView(gestureItem(getString(R.string.session_fullscreen)) { toggleImmersive() })
+        scaleLabel = TextView(this).apply {
+            text = getString(R.string.session_zoom_fit)
+            textSize = RdcText.BODY_SMALL
+            setTextColor(RdcColor.FAINT)
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+            typeface = Typeface.MONOSPACE
+        }
+        bar.addView(scaleLabel)
+        bar.addView(divider())
+        bar.addView(gestureItem(getString(R.string.session_reset_view)) { resetViewport() })
+        topLeftItem = gestureItem(getString(R.string.session_home_top_left)) { moveViewportToTopLeft() }
+        bar.addView(thinDivider())
+        bar.addView(topLeftItem)
         bar.addView(divider())
         bar.addView(gestureItem(getString(R.string.session_keyboard)) { toggleKeyboard() })
+        bar.addView(divider())
         bar.addView(gestureItem(getString(R.string.session_quality)) { openSheet(SHEET_QUALITY) })
         bar.addView(divider())
         bar.addView(gestureItem(getString(R.string.session_transfer)) { openSheet(SHEET_TRANSFER) })
+        bar.addView(divider())
+        bar.addView(gestureItem(getString(R.string.session_disconnect)) { finishSession() })
+        bar.addView(divider())
+        bar.addView(gestureItem(getString(R.string.session_back)) { exitFullscreen() })
         return bar
+    }
+
+    private fun thinDivider(): View = View(this).apply {
+        setBackgroundColor(RdcColor.LINE_STRONG)
+        layoutParams = LinearLayout.LayoutParams(dp(1), dp(12)).apply {
+            leftMargin = dp(2)
+            rightMargin = dp(2)
+        }
     }
 
     private fun gestureItem(text: String, onClick: () -> Unit): TextView =
         TextView(this).apply {
             this.text = text
-            textSize = 11.5f
+            textSize = RdcText.BODY_SMALL
             setTextColor(RdcColor.TEXT)
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(9), dp(12), dp(9))
+            setPadding(dp(8), dp(9), dp(8), dp(9))
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
-        }
+        }.also { gestureItems += it }
 
     private fun divider(): View = View(this).apply {
         setBackgroundColor(RdcColor.LINE_STRONG)
@@ -711,7 +831,7 @@ class SessionActivity : AppCompatActivity() {
         for (item in ControlContract.DIRECT_PROFILES) {
             sheet.addView(
                 actionView(
-                    getString(R.string.session_quality_option, item, qualityNote(item)),
+                    getString(R.string.session_quality_option, qualityLabel(item), qualityNote(item)),
                     11f,
                     RdcColor.TEXT,
                     RdcColor.PANEL_2,
@@ -749,7 +869,7 @@ class SessionActivity : AppCompatActivity() {
         )
         val badge = TextView(this).apply {
             text = getString(R.string.session_transfer_state_waiting)
-            textSize = 9f
+            textSize = RdcText.MICRO
             setTextColor(RdcColor.MUTED)
             setPadding(dp(8), dp(3), dp(8), dp(3))
             roundedBackground(RdcColor.PANEL_2, 999, RdcColor.LINE)
@@ -857,7 +977,7 @@ class SessionActivity : AppCompatActivity() {
         val sheet = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(10), dp(14), dp(14))
-            roundedBackground(Color.parseColor("#F21A1D22"), 16, RdcColor.LINE_STRONG)
+            roundedBackground(RdcColor.OVERLAY, 16, RdcColor.LINE_STRONG)
         }
         val head = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -892,9 +1012,10 @@ class SessionActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- 布局切换
 
-    /** 按当前方向重排: 竖屏为画面 + 信息卡 + 操作区, 横屏为全屏画面 + 悬浮手势条. */
-    private fun applyOrientationLayout() {
-        if (landscape) {
+    /** 会话布局: 窗口态为画面 + 信息卡 + 操作区, 全屏态为可缩放的沉浸画面(固定竖屏). */
+    private fun applySessionLayout() {
+        if (fullscreen) {
+            // 全屏: 关闭固定比例, 远端按适应屏幕显示, 可放大到 4 倍后双指拖动查看
             remoteBox.aspectEnabled = false
             remoteBox.ratio = 9f / 16f
             remoteBox.layoutParams = LinearLayout.LayoutParams(
@@ -903,10 +1024,17 @@ class SessionActivity : AppCompatActivity() {
                 1f,
             )
             portraitBody.visibility = View.GONE
-            gestureBar.visibility = View.VISIBLE
-            topMetrics.visibility = View.VISIBLE
+            topRow.visibility = View.GONE
+            metricPill.visibility = View.GONE
+            remoteLabel.visibility = View.GONE
+            hideFloatingBar()
+            setSystemBarsHidden(true)
             remoteBox.roundedBackground(RdcColor.SURFACE, 0)
         } else {
+            // 回到窗口态: 倍率与偏移不残留, 按窗口尺寸重新适配
+            viewportScale = 0f
+            viewportPanX = 0f
+            viewportPanY = 0f
             remoteBox.aspectEnabled = true
             remoteBox.layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -918,49 +1046,42 @@ class SessionActivity : AppCompatActivity() {
                 0,
                 1f,
             )
-            gestureBar.visibility = View.GONE
-            topMetrics.visibility = View.GONE
+            topRow.visibility = View.VISIBLE
+            metricPill.visibility = View.VISIBLE
+            hideFloatingBar()
+            setSystemBarsHidden(false)
             remoteBox.roundedBackground(RdcColor.SURFACE, 16)
         }
-        // 旋转会重建 Surface, 由 surfaceChanged 重新挂载; 方向记录同步给渲染器
         renderer.updateOrientation(rotationDegrees(), remoteWidth, remoteHeight)
+        // 进入全屏按适应屏幕的默认档重算并钳制
+        applyDefaultViewport()
         applySheet()
         refreshStatus()
     }
 
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
-        if (!landscape) {
-            immersive = false
+    private fun enterFullscreen() {
+        if (fullscreen) {
+            return
         }
-        applyOrientationLayout()
-        RdcLog.info(
-            "Session",
-            "orientation_changed",
-            "orientation=${if (landscape) "landscape" else "portrait"} " +
-                "rotation=${rotationDegrees()} surface=${surfaceView.width}x${surfaceView.height} " +
-                "session=$sessionId profile=$profile state_kept=true",
-        )
+        fullscreen = true
+        applySessionLayout()
+        RdcLog.info("Session", "enter_fullscreen", "session=$sessionId")
     }
 
-    private fun enterLandscape() {
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        RdcLog.info("Session", "enter_landscape", "session=$sessionId")
-    }
-
-    /** 横屏返回竖屏会话: 不结束会话, 只切回竖屏布局. */
-    @SuppressLint("SourceLockedOrientationActivity")
-    private fun backToPortrait() {
+    /** 全屏「返回」: 不结束会话, 只切回窗口态. */
+    private fun exitFullscreen() {
+        if (!fullscreen) {
+            return
+        }
         closeSheet()
-        // 设计稿要求「返回」回到竖屏会话, 这里短暂锁定竖屏; 不做多窗口适配
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        RdcLog.info("Session", "back_to_portrait", "session=$sessionId")
+        fullscreen = false
+        applySessionLayout()
+        RdcLog.info("Session", "exit_fullscreen", "session=$sessionId")
     }
 
     private fun onHeaderBack() {
-        if (landscape) {
-            backToPortrait()
+        if (fullscreen) {
+            exitFullscreen()
         } else {
             finishSession()
         }
@@ -968,10 +1089,7 @@ class SessionActivity : AppCompatActivity() {
 
     private fun openSheet(which: String) {
         sheetOpen = if (sheetOpen == which) null else which
-        if (sheetOpen != null && immersive) {
-            immersive = false
-            WindowInsetsControllerCompat(window, root).show(WindowInsetsCompat.Type.systemBars())
-        }
+        hideFloatingBar()
         applySheet()
         RdcLog.info("Session", "sheet_toggle", "sheet=${sheetOpen ?: "none"}")
     }
@@ -982,28 +1100,168 @@ class SessionActivity : AppCompatActivity() {
     }
 
     private fun applySheet() {
-        val visible = landscape && sheetOpen != null
+        val visible = fullscreen && sheetOpen != null
         qualitySheet.visibility = if (visible && sheetOpen == SHEET_QUALITY) View.VISIBLE else View.GONE
         transferSheet.visibility = if (visible && sheetOpen == SHEET_TRANSFER) View.VISIBLE else View.GONE
-        gestureBar.visibility = if (landscape) View.VISIBLE else View.GONE
-        topRow.visibility = if (immersive) View.GONE else View.VISIBLE
-        metricPill.visibility = if (immersive) View.GONE else View.VISIBLE
-        remoteLabel.visibility = if (immersive) View.GONE else View.VISIBLE
+        // 全屏下不保留任何常驻控件; 浮条只在轻触后短暂出现
+        topRow.visibility = if (fullscreen) View.GONE else View.VISIBLE
+        metricPill.visibility = if (fullscreen) View.GONE else View.VISIBLE
+        if (fullscreen) {
+            remoteLabel.visibility = View.GONE
+        }
     }
 
-    private fun toggleImmersive() {
-        immersive = !immersive
+    /** 全屏隐藏系统状态栏与导航栏; 退出全屏立即恢复. */
+    private fun setSystemBarsHidden(hidden: Boolean) {
         val controller = WindowInsetsControllerCompat(window, root)
-        if (immersive) {
-            controller.hide(WindowInsetsCompat.Type.systemBars())
+        if (hidden) {
             controller.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            closeSheet()
+            controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
-        applySheet()
-        RdcLog.info("Session", "immersive", "enabled=$immersive")
+        RdcLog.info("Session", "system_bars", "hidden=$hidden")
+    }
+
+    /** 轻触画面: 唤出浮条并重置 3 秒淡出计时. */
+    private fun showFloatingBar() {
+        if (!fullscreen) {
+            return
+        }
+        ticker.removeCallbacks(hideBarRunnable)
+        gestureBar.animate().cancel()
+        gestureBar.visibility = View.VISIBLE
+        gestureBar.animate().alpha(1f).setDuration(FADE_IN_MS).start()
+        ticker.postDelayed(hideBarRunnable, FLOATING_BAR_MS)
+        RdcLog.info("Session", "floating_bar_shown", "timeout_ms=$FLOATING_BAR_MS")
+        // 浮条内容与坐标落日志: 会话页持续出帧, uiautomator 取不到层级, 真机自动化只能读日志
+        gestureBar.postDelayed({ logFloatingBarItems() }, 120)
+    }
+
+    /** 记录浮条可见条目、倍率文字、可用状态与屏幕坐标, 供真机截图核对与坐标点击. */
+    private fun logFloatingBarItems() {
+        val views = mutableListOf<View>(scaleLabel)
+        views += gestureItems
+        val parts = views.map { view ->
+            val loc = IntArray(2)
+            view.getLocationOnScreen(loc)
+            val label = (view as? TextView)?.text?.toString().orEmpty()
+            "$label=${loc[0]},${loc[1]},${view.width}x${view.height}," +
+                "enabled=${view.isEnabled},alpha=${String.format(Locale.US, "%.2f", view.alpha)}"
+        }
+        lastBarLog = parts.joinToString("|")
+        RdcLog.info("Session", "floating_bar_items", lastBarLog)
+    }
+
+    private fun fadeOutFloatingBar() {
+        if (gestureBar.visibility != View.VISIBLE) {
+            return
+        }
+        gestureBar.animate().cancel()
+        gestureBar.animate().alpha(0f).setDuration(FADE_OUT_MS).withEndAction {
+            gestureBar.visibility = View.GONE
+            gestureBar.alpha = 1f
+        }.start()
+        RdcLog.info("Session", "floating_bar_hidden", "reason=timeout")
+    }
+
+    private fun hideFloatingBar() {
+        ticker.removeCallbacks(hideBarRunnable)
+        gestureBar.animate().cancel()
+        gestureBar.visibility = View.GONE
+        gestureBar.alpha = 1f
+    }
+
+    /** 按当前视口重算显示矩阵: 全屏按倍率缩放, 窗口态按适应比例. */
+    private fun applyViewportMatrix() {
+        if (!::videoView.isInitialized) {
+            return
+        }
+        val state = currentViewport()
+        // 窗口态每次布局都按适应屏幕重算; 只有全屏态才记住用户手动调的倍率与偏移
+        if (fullscreen) {
+            viewportScale = state.scale
+            viewportPanX = state.panX
+            viewportPanY = state.panY
+        }
+        val matrix = Matrix()
+        matrix.setValues(ViewportMath.matrixValues(state))
+        videoView.setTransform(matrix)
+        updateScaleLabel(state)
+        val log = "mode=${if (fullscreen) "fullscreen" else "window"} " +
+            "scale=${String.format(Locale.US, "%.2f", state.scale)} " +
+            "min=${String.format(Locale.US, "%.2f", ViewportMath.minScale(state))} " +
+            "max=${String.format(Locale.US, "%.2f", ViewportMath.maxScale(state))} " +
+            "source=${state.sourceWidth.toInt()}x${state.sourceHeight.toInt()} " +
+            "view=${state.viewWidth.toInt()}x${state.viewHeight.toInt()} " +
+            "content=${ViewportMath.contentWidth(state).toInt()}x${ViewportMath.contentHeight(state).toInt()} " +
+            "offset=${ViewportMath.contentLeft(state).toInt()},${ViewportMath.contentTop(state).toInt()}"
+        if (log != lastViewportLog) {
+            lastViewportLog = log
+            RdcLog.info("Session", "viewport_fit", log)
+        }
+    }
+
+    /** 浮条倍率与「回到左上角」可用状态. */
+    private fun updateScaleLabel(state: Viewport) {
+        if (::scaleLabel.isInitialized) {
+            val fit = ViewportMath.minScale(state)
+            // 等于默认档(适应屏幕)时显示「适应」, 否则显示当前倍率
+            val atFit = kotlin.math.abs(state.scale - fit) <= fit * 0.005f
+            scaleLabel.text = if (atFit) {
+                getString(R.string.session_zoom_fit)
+            } else {
+                getString(R.string.session_zoom_format, ViewportMath.multiplier(state))
+            }
+        }
+        if (::topLeftItem.isInitialized) {
+            val canTopLeft = ViewportMath.canPanToTopLeft(state)
+            topLeftItem.isEnabled = canTopLeft
+            topLeftItem.alpha = if (canTopLeft) 1f else 0.35f
+        }
+    }
+
+    /** 应用新的视口状态(已夹取), 刷新画面与倍率. */
+    private fun applyViewport(state: Viewport) {
+        val clamped = ViewportMath.clamp(state)
+        viewportScale = clamped.scale
+        viewportPanX = clamped.panX
+        viewportPanY = clamped.panY
+        applyViewportMatrix()
+    }
+
+    /** 全屏可缩放; 窗口态固定缩到能看见整个桌面. */
+    private fun currentViewport(): Viewport {
+        val probe = Viewport(
+            viewWidth = videoView.width.toFloat(),
+            viewHeight = videoView.height.toFloat(),
+            sourceWidth = remoteWidth.toFloat(),
+            sourceHeight = remoteHeight.toFloat(),
+        )
+        // 0 表示用户未手动调整: 默认档 = 适应屏幕
+        val default = ViewportMath.defaultScale(probe)
+        val base = probe.copy(
+            scale = if (viewportScale > 0f) viewportScale else default,
+            panX = viewportPanX,
+            panY = viewportPanY,
+        )
+        return ViewportMath.clamp(base)
+    }
+
+    /** 进入全屏后回到默认档(适应屏幕), 偏移清零; 界面固定竖屏, 旋转不触发重算. */
+    private fun applyDefaultViewport() {
+        viewportScale = 0f
+        viewportPanX = 0f
+        viewportPanY = 0f
+        applyViewportMatrix()
+        val resolved = currentViewport()
+        RdcLog.info(
+            "Session",
+            "viewport_default",
+            "mode=${if (fullscreen) "fullscreen" else "window"} " +
+                "scale=${String.format(Locale.US, "%.4f", resolved.scale)}",
+        )
     }
 
     // ---------------------------------------------------------------- 状态刷新
@@ -1011,35 +1269,143 @@ class SessionActivity : AppCompatActivity() {
     private fun refreshStatus() {
         val status = ControlContract.getSessionStatus(sessionId)
         val metrics = ControlContract.getSessionMetrics(sessionId)
-        val connected = status.ok && !offlinePreview
+        // A8: 只消费命令层 state 字段, 不在界面自造状态
+        val reportedState = status.data["state"]?.toString()?.lowercase().orEmpty()
+        val reportedReason = status.data["reason"]?.toString().orEmpty()
+        val failed = reportedState == "failed"
+        val reconnecting = reportedState == "reconnecting"
+        val connected = status.ok && !offlinePreview && !failed
+        val recovering = reconnecting || (connected && firstFrameSeen && renderer.recovering)
 
-        stateLine.text = if (connected) {
-            getString(R.string.session_state_online, status.data["transport_kind"]?.toString() ?: "—")
-        } else {
-            getString(R.string.session_state_offline)
+        stateLine.text = when {
+            failed -> if (reportedReason.isNotBlank()) {
+                "连接失败 · $reportedReason"
+            } else {
+                "连接失败，请重试或断开"
+            }
+            reconnecting -> getString(
+                R.string.session_state_recovering,
+                transportLabel(status.data["transport_kind"]?.toString()),
+            )
+            connected -> getString(
+                R.string.session_state_online,
+                transportLabel(status.data["transport_kind"]?.toString()),
+            )
+            else -> getString(R.string.session_state_offline)
         }
-        stateBadge.text = getString(if (connected) R.string.session_badge_online else R.string.session_badge_offline)
-        stateBadge.setTextColor(if (connected) RdcColor.OK else RdcColor.WARN)
+        stateBadge.text = when {
+            failed -> getString(R.string.session_badge_failed)
+            connected -> getString(R.string.session_badge_online)
+            else -> getString(R.string.session_badge_offline)
+        }
+        stateBadge.setTextColor(
+            when {
+                failed -> RdcColor.DANGER
+                connected -> RdcColor.OK
+                else -> RdcColor.WARN
+            },
+        )
 
         val fps = metricValue(metrics, "fps")
         val p50 = metricValue(metrics, "p50_ms")
         val p95 = metricValue(metrics, "p95_ms")
         val bitrate = metricValue(metrics, "bitrate_kbps")
+        val samples = metrics.data["latency_samples"]?.toString()
+        // 实际档位以被控端 ready 报出的分辨率为准; 尚未收到 ready 时退回用户选择
+        val reportedProfile = metricValue(metrics, "quality_profile")
+        val profileText = if (reportedProfile == "—") qualityLabel(profile) else reportedProfile
+        // 样本不足时显示实际样本数, 不留空
+        val latencyText = when {
+            p50 != "—" && p95 != "—" -> "$p50 / $p95"
+            samples != null -> getString(R.string.session_latency_pending, samples)
+            else -> "—"
+        }
         statFps.text = fps
-        statLatency.text = if (p50 == "—" && p95 == "—") "—" else "$p50 / $p95"
-        statBitrate.text = if (bitrate == "—") "—" else "$bitrate kbps"
-        statProfile.text = profile
+        statLatency.text = latencyText
+        statBitrate.text = if (bitrate == "—") "—" else "$bitrate 千比特/秒"
+        statProfile.text = profileText
 
-        val pill = getString(
-            R.string.session_metrics_value,
-            if (p50 == "—") "—" else p50,
-            if (fps == "—") "—" else fps,
-            profile,
-        )
+        val pill = if (p50 == "—" && samples != null) {
+            getString(
+                R.string.session_metrics_pending,
+                latencyText,
+                if (fps == "—") "—" else fps,
+                profileText,
+            )
+        } else {
+            getString(
+                R.string.session_metrics_value,
+                if (p50 == "—") "—" else p50,
+                if (fps == "—") "—" else fps,
+                profileText,
+            )
+        }
         metricPill.text = pill
         topMetrics.text = pill
         refreshChipSelection()
-        placeholder.visibility = if (connected) View.GONE else View.VISIBLE
+        val showingVideo = connected && firstFrameSeen && renderer.running
+        placeholder.text = when {
+            failed -> if (reportedReason.isNotBlank()) {
+                "连接失败：$reportedReason\n请重试或断开"
+            } else {
+                "连接失败，请重试或断开"
+            }
+            recovering -> getString(R.string.session_recovering)
+            else -> getString(R.string.session_placeholder)
+        }
+        placeholder.visibility = if (showingVideo && !recovering && !failed) View.GONE else View.VISIBLE
+        remoteLabel.visibility = if (fullscreen || (showingVideo && !recovering)) View.GONE else View.VISIBLE
+        attachSessionCopyMenu(failed, reportedReason)
+    }
+
+    /** 长按占位层: 中文菜单复制失败原因与会话标识. */
+    private fun attachSessionCopyMenu(failed: Boolean, reason: String) {
+        placeholder.isLongClickable = true
+        placeholder.setOnLongClickListener {
+            val entries = mutableListOf<Pair<String, String>>()
+            if (failed && reason.isNotBlank()) {
+                entries.add("失败原因" to reason)
+            }
+            if (sessionId.isNotBlank()) {
+                entries.add("会话标识" to sessionId)
+            }
+            if (peerId.isNotBlank()) {
+                entries.add("对端设备" to peerId)
+            }
+            if (entries.isEmpty()) {
+                return@setOnLongClickListener true
+            }
+            AlertDialog.Builder(this)
+                .setTitle("复制内容")
+                .setItems(entries.map { "复制${it.first}" }.toTypedArray()) { _, index ->
+                    val (label, value) = entries[index]
+                    val manager = getSystemService(ClipboardManager::class.java)
+                    manager.setPrimaryClip(ClipData.newPlainText(label, value))
+                    toast("已复制$label")
+                }
+                .setNegativeButton("取消", null)
+                .show()
+            true
+        }
+    }
+
+    /** 远端帧到达: 送入硬解; 画面尺寸变化时同步给触摸坐标映射. */
+    private fun onVideoFrame(frame: LanSession.VideoFrame) {
+        if (remoteWidth != frame.width || remoteHeight != frame.height) {
+            remoteWidth = frame.width
+            remoteHeight = frame.height
+            root.post { applyViewportMatrix() }
+        }
+        renderer.feed(frame)
+        if (!firstFrameSeen) {
+            firstFrameSeen = true
+            RdcLog.info(
+                "Session",
+                "first_frame",
+                "size=${frame.width}x${frame.height} key=${frame.key} profile=$profile",
+            )
+            root.post { refreshStatus() }
+        }
     }
 
     private fun metricValue(result: CommandResult, key: String): String {
@@ -1226,8 +1592,47 @@ class SessionActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- 输入上行
 
-    /** 触摸转指针事件: 归一化到远端画面内容区, 黑边不产生事件. */
+    /** 触摸转指针事件: 归一化到远端画面内容区并钳制边界; 全屏轻触唤出浮条. */
     private fun onRemoteTouch(event: MotionEvent): Boolean {
+        // 双指缩放与双击还原由手势识别器消费, 单指点击/拖动仍按鼠标事件下发
+        scaleDetector.onTouchEvent(event)
+        if (event.pointerCount == 1) {
+            doubleTapDetector.onTouchEvent(event)
+        }
+        if (event.pointerCount >= 2) {
+            return handleMultiTouch(event)
+        }
+        if (multiTouchActive) {
+            // 双指抬起过程中残留的单指不当作点击
+            if (event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL
+            ) {
+                multiTouchActive = false
+            }
+            return true
+        }
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
+            showFloatingBar()
+            // 落点日志: 真机自动化用坐标点击时据此核对归一化位置
+            val state = currentViewport()
+            val mapped = ViewportMath.mapToNormalized(state, event.x, event.y)
+            if (mapped != null) {
+                val origin = IntArray(2)
+                videoView.getLocationOnScreen(origin)
+                RdcLog.info(
+                    "Session",
+                    "remote_tap",
+                    "view=${event.x.toInt()},${event.y.toInt()} " +
+                        "origin=${origin[0]},${origin[1]} " +
+                        "normalized=${String.format(Locale.US, "%.4f", mapped.first)}," +
+                        String.format(Locale.US, "%.4f", mapped.second) +
+                        " content=${ViewportMath.contentLeft(state).toInt()}," +
+                        "${ViewportMath.contentTop(state).toInt()}," +
+                        "${ViewportMath.contentWidth(state).toInt()}x" +
+                        "${ViewportMath.contentHeight(state).toInt()}",
+                )
+            }
+        }
         val normalized = mapToRemote(event.x, event.y) ?: return true
         val action = when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> InputEvent.Pointer.Action.DOWN
@@ -1240,28 +1645,103 @@ class SessionActivity : AppCompatActivity() {
         return true
     }
 
-    /** 等比适配远端画面, 返回内容区归一化坐标; 落在黑边上返回 null. */
-    private fun mapToRemote(touchX: Float, touchY: Float): Pair<Float, Float>? {
-        val viewWidth = surfaceView.width.toFloat()
-        val viewHeight = surfaceView.height.toFloat()
-        if (viewWidth <= 0f || viewHeight <= 0f) {
-            return null
+    /** 双指拖动平移视口: 只在全屏原始像素下生效; 单指始终留给远端鼠标操作. */
+    private fun handleMultiTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                multiTouchActive = true
+                lastMultiX = averageX(event)
+                lastMultiY = averageY(event)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!multiTouchActive) {
+                    return true
+                }
+                val x = averageX(event)
+                val y = averageY(event)
+                val deltaX = x - lastMultiX
+                val deltaY = y - lastMultiY
+                lastMultiX = x
+                lastMultiY = y
+                if (deltaX != 0f || deltaY != 0f) {
+                    panViewport(deltaX, deltaY)
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // 剩余指针不足两根就结束双指平移, 避免后续单指拖动继续带动视口
+                multiTouchActive = event.pointerCount - 1 >= 2
+            }
+            MotionEvent.ACTION_CANCEL -> multiTouchActive = false
         }
-        val rotated = rotationDegrees() % 180 != 0
-        val sourceWidth = if (rotated) remoteHeight.toFloat() else remoteWidth.toFloat()
-        val sourceHeight = if (rotated) remoteWidth.toFloat() else remoteHeight.toFloat()
-        val scale = minOf(viewWidth / sourceWidth, viewHeight / sourceHeight)
-        val contentWidth = sourceWidth * scale
-        val contentHeight = sourceHeight * scale
-        val left = (viewWidth - contentWidth) / 2f
-        val top = (viewHeight - contentHeight) / 2f
-        if (touchX < left || touchX > left + contentWidth || touchY < top || touchY > top + contentHeight) {
-            return null
-        }
-        val x = ((touchX - left) / contentWidth).coerceIn(0f, 1f)
-        val y = ((touchY - top) / contentHeight).coerceIn(0f, 1f)
-        return x to y
+        return true
     }
+
+    /** 平移视口并按边界夹取; 只移动显示, 不改远端画面内容. */
+    private fun panViewport(deltaX: Float, deltaY: Float) {
+        val before = currentViewport()
+        val moved = ViewportMath.panBy(before, deltaX, deltaY)
+        if (moved.panX == before.panX && moved.panY == before.panY) {
+            return
+        }
+        viewportPanX = moved.panX
+        viewportPanY = moved.panY
+        applyViewportMatrix()
+        RdcLog.info(
+            "Session",
+            "viewport_pan",
+            "dx=${deltaX.toInt()} dy=${deltaY.toInt()} " +
+                "pan=${ViewportMath.contentLeft(moved).toInt()},${ViewportMath.contentTop(moved).toInt()}",
+        )
+    }
+
+    /** 浮条「还原画面」/双击: 回默认档(适应屏幕)并居中. */
+    private fun resetViewport() {
+        val target = ViewportMath.reset(currentViewport())
+        applyViewport(target)
+        showFloatingBar()
+        RdcLog.info(
+            "Session",
+            "viewport_reset",
+            "mode=${if (fullscreen) "fullscreen" else "window"} " +
+                "scale=${String.format(Locale.US, "%.4f", target.scale)}",
+        )
+    }
+
+    /** 浮条「回到左上角」: 仅画面超出屏幕时可用. */
+    private fun moveViewportToTopLeft() {
+        val state = currentViewport()
+        if (!ViewportMath.canPanToTopLeft(state)) {
+            return
+        }
+        val moved = ViewportMath.topLeft(state)
+        applyViewport(moved)
+        showFloatingBar()
+        RdcLog.info(
+            "Session",
+            "viewport_top_left",
+            "offset=${ViewportMath.contentLeft(moved).toInt()},${ViewportMath.contentTop(moved).toInt()}",
+        )
+    }
+
+    private fun averageX(event: MotionEvent): Float {
+        var total = 0f
+        for (index in 0 until event.pointerCount) {
+            total += event.getX(index)
+        }
+        return total / event.pointerCount.coerceAtLeast(1)
+    }
+
+    private fun averageY(event: MotionEvent): Float {
+        var total = 0f
+        for (index in 0 until event.pointerCount) {
+            total += event.getY(index)
+        }
+        return total / event.pointerCount.coerceAtLeast(1)
+    }
+
+    /** 等比铺满后把触摸换算为远端归一化坐标; 画面外触摸钳制到最近的画面边缘. */
+    private fun mapToRemote(touchX: Float, touchY: Float): Pair<Float, Float>? =
+        ViewportMath.mapToNormalized(currentViewport(), touchX, touchY)
 
     private fun forwardImeText(text: String) {
         for (char in text) {
@@ -1303,21 +1783,39 @@ class SessionActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- Surface 与生命周期
 
-    private val surfaceCallback = object : SurfaceHolder.Callback {
-        override fun surfaceCreated(holder: SurfaceHolder) {
-            renderer.attachSurface(holder.surface, surfaceView.width, surfaceView.height)
-            RdcLog.info("Session", "surface_created", "size=${surfaceView.width}x${surfaceView.height}")
+    /** TextureView 接管 SurfaceTexture: 尺寸变化时热切换输出面并重算铺满矩阵. */
+    private val textureListener = object : TextureView.SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+            attachVideoSurface(texture, width, height)
         }
 
-        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-            renderer.attachSurface(holder.surface, width, height)
-            RdcLog.info("Session", "surface_changed", "size=${width}x$height session_kept=true")
+        override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
+            attachVideoSurface(texture, width, height)
         }
 
-        override fun surfaceDestroyed(holder: SurfaceHolder) {
+        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
             renderer.detachSurface()
-            RdcLog.info("Session", "surface_destroyed", "session_kept=true")
+            videoSurface?.release()
+            videoSurface = null
+            attachedTexture = null
+            RdcLog.info("Session", "texture_destroyed", "session_kept=true")
+            return true
         }
+
+        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+    }
+
+    private fun attachVideoSurface(texture: SurfaceTexture, width: Int, height: Int) {
+        if (attachedTexture !== texture || videoSurface?.isValid != true) {
+            videoSurface?.release()
+            videoSurface = Surface(texture)
+            attachedTexture = texture
+        }
+        renderer.attachSurface(videoSurface!!, width, height)
+        applyViewportMatrix()
+        // 旋转或尺寸变化时 TextureView 会重置变换, 布局完成后再写一次
+        videoView.post { applyViewportMatrix() }
+        RdcLog.info("Session", "texture_attached", "size=${width}x$height")
     }
 
     private fun rotationDegrees(): Int {
@@ -1332,6 +1830,8 @@ class SessionActivity : AppCompatActivity() {
     }
 
     private fun finishSession() {
+        // 退出全屏回到窗口态: 先恢复系统栏, 再结束会话
+        setSystemBarsHidden(false)
         val result = ControlContract.stopSession(sessionId)
         RdcLog.info("Session", "session_stopped", "session=$sessionId message=${result.message}")
         finish()
@@ -1417,7 +1917,12 @@ class SessionActivity : AppCompatActivity() {
         private const val TRANSFER_STEP = 4
         private const val REMOTE_CLIPBOARD_BYTES = 128
 
+        /** 浮条出现后 3 秒自动淡出. */
+        private const val FLOATING_BAR_MS = 3_000L
+        private const val FADE_IN_MS = 150L
+        private const val FADE_OUT_MS = 250L
+
         /** 覆盖层描边: 白色 12% 透明度. */
-        private val OVERLAY_BORDER = Color.parseColor("#1FFFFFFF")
+        private val OVERLAY_BORDER = RdcColor.MEDIA_LINE
     }
 }

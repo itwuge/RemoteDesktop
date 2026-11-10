@@ -133,7 +133,7 @@ class SessionWorker(QThread):
             relay_socket = relay_connect(
                 self.arguments.host, self.arguments.port, relay_token, session_id, "subscriber"
             )
-            session = controller_handshake(relay_socket, identity)
+            session = controller_handshake(relay_socket, identity, session_id, self.arguments.peer_device_id)
             channel = AeadChannel(relay_socket, session)
             self.channel = channel
             self.state_changed.emit("数据面与 AEAD 握手完成, 等待画面")

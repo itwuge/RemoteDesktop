@@ -37,6 +37,7 @@ class TransferItem:
     destination: Path
     size: int
     sent: int = 0
+    sha256: str = ""
 
 
 @dataclass
@@ -52,6 +53,9 @@ class TransferJob:
     rate_limit_bps: int = 0
     state: str = "running"
     sent_bytes: int = 0
+    acked_bytes: int = 0
+    remote: bool = False
+    phase: str = ""
     current_index: int = 0
     error_code: str | None = None
     error_message: str = ""
@@ -80,6 +84,9 @@ class TransferJob:
             "destination": str(self.destination),
             "total_bytes": self.total_bytes,
             "sent_bytes": self.sent_bytes,
+            "acked_bytes": self.acked_bytes,
+            "remote": self.remote,
+            "phase": self.phase,
             "percent": percent,
             "speed_kbps": speed_kbps,
             "eta_seconds": eta_seconds,

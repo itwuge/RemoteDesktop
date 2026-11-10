@@ -25,9 +25,36 @@ from typing import Any
 
 from rdc.core.runtime import data_dir
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 6
 DATABASE_FILE_NAME = "accounts.db"
 ENV_DATABASE_PATH = "RDC_ACCOUNTS_DB"
+
+# 版本升级步骤: 键为起始版本, 值为按顺序执行的语句, 执行完统一写入 SCHEMA_VERSION.
+# v1 -> v2: 旧库中的免确认默认值 0 来自代码默认而非用户显式选择; 安全审计要求默认需确认,
+# 因此统一收紧为 1, 需要免确认的用户在界面上重新选择「信任此设备」, 原账号与设备数据全部保留.
+# v2 -> v3: 新增屏幕墙归属表, 只建表不改旧数据; 使用 IF NOT EXISTS 保证重复升级幂等,
+# 已在 v3 的库不会再次执行, 墙归属不会因重启丢失.
+# v3 -> v4: 新增设备最近连接时间, 可空列; 旧数据保持 NULL, 不参与鉴权, 只供界面展示.
+# v4 -> v5: 新增设备平台、受信时间与受信来源; 旧数据平台写 unknown, 受信列保持空, 由后续显式信任补齐.
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    1: ("UPDATE devices SET require_confirm = 1",),
+    2: (
+        """
+        CREATE TABLE IF NOT EXISTS walls (
+            wall_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            bound_by_device_id TEXT NOT NULL DEFAULT '',
+            bound_at TEXT NOT NULL
+        )
+        """,
+    ),
+    # v3 -> v4 / v4 -> v5 的新增列用 PRAGMA 探测后补齐, 见 _ensure_optional_columns;
+    # 这样可以兼容「表结构已是新版本但 user_version 被回退」的库, 升级保持幂等.
+    3: (),
+    4: (),
+    # v5 -> v6: 服务端已读水位, 供安卓与桌面共用同一套未读口径; 账号维度一行.
+    5: ("CREATE TABLE IF NOT EXISTS message_reads (account_id TEXT PRIMARY KEY, read_until TEXT NOT NULL)",),
+}
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -48,9 +75,13 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         display_name TEXT NOT NULL,
         owner_account_id TEXT,
         bound_at TEXT,
-        require_confirm INTEGER NOT NULL DEFAULT 0,
+        require_confirm INTEGER NOT NULL DEFAULT 1,
         last_seen_at REAL,
-        presence_offline INTEGER NOT NULL DEFAULT 0
+        presence_offline INTEGER NOT NULL DEFAULT 0,
+        last_connected_at REAL,
+        platform TEXT NOT NULL DEFAULT 'unknown',
+        trusted_at REAL,
+        trust_source TEXT NOT NULL DEFAULT ''
     )
     """,
     """
@@ -92,6 +123,14 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS walls (
+        wall_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        bound_by_device_id TEXT NOT NULL DEFAULT '',
+        bound_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
@@ -100,6 +139,12 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         target TEXT NOT NULL,
         result TEXT NOT NULL,
         detail TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS message_reads (
+        account_id TEXT PRIMARY KEY,
+        read_until TEXT NOT NULL
     )
     """,
 )
@@ -118,15 +163,19 @@ ON CONFLICT(account_id) DO UPDATE SET
 
 DEVICE_UPSERT = """
 INSERT INTO devices (device_id, display_name, owner_account_id, bound_at, require_confirm,
-                     last_seen_at, presence_offline)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+                     last_seen_at, presence_offline, last_connected_at, platform, trusted_at, trust_source)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(device_id) DO UPDATE SET
     display_name = excluded.display_name,
     owner_account_id = excluded.owner_account_id,
     bound_at = excluded.bound_at,
     require_confirm = excluded.require_confirm,
     last_seen_at = excluded.last_seen_at,
-    presence_offline = excluded.presence_offline
+    presence_offline = excluded.presence_offline,
+    last_connected_at = excluded.last_connected_at,
+    platform = excluded.platform,
+    trusted_at = excluded.trusted_at,
+    trust_source = excluded.trust_source
 """
 
 AUTH_RECORD_UPSERT = """
@@ -174,6 +223,15 @@ ON CONFLICT(request_id) DO UPDATE SET
 
 AUDIT_INSERT = """
 INSERT INTO audit (ts, event, actor, target, result, detail) VALUES (?, ?, ?, ?, ?, ?)
+"""
+
+WALL_UPSERT = """
+INSERT INTO walls (wall_id, account_id, bound_by_device_id, bound_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(wall_id) DO UPDATE SET
+    account_id = excluded.account_id,
+    bound_by_device_id = excluded.bound_by_device_id,
+    bound_at = excluded.bound_at
 """
 
 
@@ -229,7 +287,7 @@ class AccountDatabase:
             self.close()
             raise AccountStoreError(f"账号数据文件损坏或不是有效的数据库: {self.path}") from exc
         version = int(version_row[0]) if version_row else 0
-        if version not in (0, SCHEMA_VERSION):
+        if version > SCHEMA_VERSION:
             self.close()
             raise AccountStoreError(
                 f"账号数据文件版本不兼容: 文件版本 {version}, 当前程序需要 {SCHEMA_VERSION}, 路径 {self.path}"
@@ -238,6 +296,15 @@ class AccountDatabase:
         if check != "ok":
             self.close()
             raise AccountStoreError(f"账号数据文件完整性校验未通过: {self.path}")
+        if version == SCHEMA_VERSION:
+            return
+        if version == 0:
+            self._create_schema()
+            return
+        self._migrate(version)
+
+    def _create_schema(self) -> None:
+        """新建库: 建表并写入当前版本号."""
         try:
             with self._conn:
                 for statement in SCHEMA_STATEMENTS:
@@ -246,6 +313,38 @@ class AccountDatabase:
         except sqlite3.Error as exc:
             self.close()
             raise AccountStoreError(f"账号数据表创建失败: {self.path}") from exc
+
+    def _migrate(self, version: int) -> None:
+        """按版本逐级升级结构; 只做结构与默认值收敛, 不清数据."""
+        steps = range(version, SCHEMA_VERSION)
+        if any(step not in MIGRATIONS for step in steps):
+            self.close()
+            raise AccountStoreError(
+                f"账号数据文件版本不兼容: 文件版本 {version}, 当前程序需要 {SCHEMA_VERSION}, 路径 {self.path}"
+            )
+        try:
+            with self._conn:
+                for step in range(version, SCHEMA_VERSION):
+                    for statement in MIGRATIONS[step]:
+                        self._conn.execute(statement)
+                self._ensure_optional_columns()
+                self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        except sqlite3.Error as exc:
+            self.close()
+            raise AccountStoreError(f"账号数据文件升级失败: {self.path}") from exc
+
+    def _ensure_optional_columns(self) -> None:
+        """补齐 v4 与 v5 新增列; 已存在时跳过, 保证重复升级幂等."""
+        columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(devices)").fetchall()}
+        optional = {
+            "last_connected_at": "REAL",
+            "platform": "TEXT NOT NULL DEFAULT 'unknown'",
+            "trusted_at": "REAL",
+            "trust_source": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, declaration in optional.items():
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE devices ADD COLUMN {name} {declaration}")
 
     def close(self) -> None:
         """关闭连接; 幂等."""
@@ -276,7 +375,7 @@ class AccountDatabase:
     def load_devices(self) -> list[tuple[Any, ...]]:
         return self._fetch(
             "SELECT device_id, display_name, owner_account_id, bound_at, require_confirm, last_seen_at,"
-            " presence_offline FROM devices ORDER BY rowid"
+            " presence_offline, last_connected_at, platform, trusted_at, trust_source FROM devices ORDER BY rowid"
         )
 
     def load_tokens(self) -> list[tuple[Any, ...]]:
@@ -299,6 +398,9 @@ class AccountDatabase:
 
     def load_audit(self) -> list[tuple[Any, ...]]:
         return self._fetch("SELECT ts, event, actor, target, result, detail FROM audit ORDER BY id")
+
+    def load_walls(self) -> list[tuple[Any, ...]]:
+        return self._fetch("SELECT wall_id, account_id, bound_by_device_id, bound_at FROM walls ORDER BY rowid")
 
     # ------------------------------------------------------------------ 写
     def _execute_many(self, sql: str, params: Sequence[Sequence[Any]]) -> None:
@@ -331,3 +433,19 @@ class AccountDatabase:
 
     def append_audit(self, rows: Sequence[Sequence[Any]]) -> None:
         self._execute_many(AUDIT_INSERT, rows)
+
+    def message_read_until(self, account_id: str) -> str:
+        """读取账号级已读水位; 未设置返回空串."""
+        row = self._conn.execute("SELECT read_until FROM message_reads WHERE account_id = ?", (account_id,)).fetchone()
+        return "" if row is None else str(row[0])
+
+    def set_message_read_until(self, account_id: str, read_until: str) -> None:
+        """写入账号级已读水位, 供安卓与桌面共享未读口径."""
+        self._conn.execute(
+            "INSERT INTO message_reads (account_id, read_until) VALUES (?, ?) "
+            "ON CONFLICT(account_id) DO UPDATE SET read_until = excluded.read_until",
+            (account_id, read_until),
+        )
+
+    def save_walls(self, rows: Sequence[Sequence[Any]]) -> None:
+        self._execute_many(WALL_UPSERT, rows)

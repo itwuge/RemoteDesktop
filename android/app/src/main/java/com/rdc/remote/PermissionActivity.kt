@@ -26,7 +26,7 @@ class PermissionActivity : AppCompatActivity() {
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(14), dp(20), dp(28))
+            setPadding(RdcMetrics.PAGE_PADDING, dp(14), RdcMetrics.PAGE_PADDING, dp(28))
             setBackgroundColor(RdcColor.BG)
         }
 
@@ -41,7 +41,7 @@ class PermissionActivity : AppCompatActivity() {
         column.addView(
             TextView(this).apply {
                 text = getString(R.string.permission_title)
-                textSize = 22f
+                textSize = RdcText.METRIC
                 setTextColor(RdcColor.TEXT)
                 setPadding(0, dp(14), 0, dp(4))
             },
@@ -109,7 +109,7 @@ class PermissionActivity : AppCompatActivity() {
             addView(
                 TextView(this@PermissionActivity).apply {
                     text = getString(R.string.permission_step_index, index)
-                    textSize = 11f
+                    textSize = RdcText.META
                     setTextColor(RdcColor.ACCENT)
                     gravity = Gravity.CENTER
                     roundedBackground(RdcColor.ACCENT_SOFT, 999)

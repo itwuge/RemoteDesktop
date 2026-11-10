@@ -18,7 +18,7 @@ from __future__ import annotations
 from rdc.core.result import CommandResult
 from rdc.files.service import FileTransferService, default_destination_root
 
-_service = FileTransferService()
+_service = FileTransferService(allow_local_staging=False)
 
 
 def configure(service: FileTransferService, scope: str = "control") -> None:
@@ -36,6 +36,11 @@ def get_service() -> FileTransferService:
 def default_destination() -> str:
     """返回默认接收目录."""
     return str(default_destination_root())
+
+
+def get_transfer_channel_status() -> CommandResult:
+    """查询文件传输当前使用的会话通道; 降级通道会明确标注对中继可见 (契约第 50 条)."""
+    return _service.channel_status()
 
 
 def set_transfer_scope(scope: str) -> CommandResult:

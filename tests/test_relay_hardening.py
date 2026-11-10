@@ -58,9 +58,9 @@ def _cert_dir() -> Path:
 # --------------------------------------------------------------- 配置
 
 
-def test_example_config_exposes_hardening_defaults():
+def test_example_config_exposes_hardening_defaults(tmp_path):
     """样例配置给出三道上限、最低预算与日志级别, 与代码默认值一致."""
-    config = load_config(EXAMPLE)
+    config = load_config(_rewrite(tmp_path, "tls_enabled", "false"))
     assert config.max_connections == 64
     assert config.max_connections_per_ip == 8
     assert config.connect_rate_per_min == 60
@@ -102,9 +102,42 @@ def test_allow_and_deny_lists_are_enforced():
     guard = ConnectionGuard(_config(allow_ips="10.0.0.0/24", deny_ips="10.0.0.9"))
     assert guard.admit("10.0.0.1") == (True, "")
     guard.release("10.0.0.1")
-    assert guard.admit("10.0.0.9") == (False, "denied")
-    assert guard.admit("192.168.1.1") == (False, "denied")
+    assert guard.admit("10.0.0.9") == (False, "deny_listed")
+    assert guard.admit("192.168.1.1") == (False, "source_denied")
     assert guard.snapshot()["rejected"]["denied"] == 2
+
+
+def test_open_port_admits_global_ipv6_only():
+    """额外 WAN 端口只放宽全局 IPv6 来源; 主端口口径不变, 其他来源仍拒."""
+    guard = ConnectionGuard(_config(allow_ips="127.0.0.1/32,::1/128", open_ports=(443,)))
+    public = "2409:8a00:1234:5678::1"
+    assert guard.admit(public, 443) == (True, "")
+    guard.release(public)
+    # 主端口不在开放名单: 公网来源仍按白名单拒绝
+    assert guard.admit(public, 27888) == (False, "source_denied")
+    # 开放端口不等于放开一切来源: ULA/链路本地/公网 IPv4 都不放行
+    assert guard.admit("fc00::1", 443) == (False, "source_denied")
+    assert guard.admit("fe80::1", 443) == (False, "source_denied")
+    assert guard.admit("114.114.114.114", 443) == (False, "source_denied")
+    # 白名单内来源不算「因开放端口放行」, 审计口径保持主端口一致
+    assert guard.admits_public_source("::1", 443) is False
+    assert guard.admits_public_source(public, 443) is True
+    assert guard.snapshot()["rejected"]["denied"] == 4
+
+
+def test_open_port_keeps_deny_list_and_rate_limits():
+    """来源放宽不降低其他门槛: deny 名单优先, 速率限制照旧."""
+    guard = ConnectionGuard(
+        _config(
+            allow_ips="127.0.0.1/32",
+            deny_ips="2409:8a00::/32",
+            open_ports=(443,),
+            connect_rate_per_min=1,
+        )
+    )
+    assert guard.admit("2409:8a00::1", 443) == (False, "deny_listed")
+    assert guard.admit("2409:8b00::1", 443) == (True, "")
+    assert guard.admit("2409:8b00::1", 443) == (False, "rate_limited")
 
 
 def test_connection_rate_is_limited_per_ip():

@@ -20,10 +20,14 @@ internal object AppPrefs {
     private const val KEY_AUTO_DOWNGRADE = "auto_downgrade"
     private const val KEY_CLIPBOARD = "clipboard_sync"
     private const val KEY_NOTICE_READ = "system_notice_read"
+    private const val KEY_DARK_THEME = "dark_theme"
+    private const val KEY_DEMO_DATA = "demo_data"
 
     const val DEFAULT_PROFILE = "auto"
     const val DEFAULT_AUTO_DOWNGRADE = true
     const val DEFAULT_CLIPBOARD = true
+    const val DEFAULT_DARK_THEME = true
+    const val DEFAULT_DEMO_DATA = false
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
@@ -60,5 +64,21 @@ internal object AppPrefs {
 
     fun setNoticeRead(context: Context, read: Boolean) {
         prefs(context).edit().putBoolean(KEY_NOTICE_READ, read).apply()
+    }
+
+    /** 深色外观, 默认开启; 关闭即浅色. */
+    fun darkTheme(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_DARK_THEME, DEFAULT_DARK_THEME)
+
+    fun setDarkTheme(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_DARK_THEME, enabled).apply()
+    }
+
+    /** 示例数据: 只用于展示信息层次, 默认关闭. */
+    fun demoData(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_DEMO_DATA, DEFAULT_DEMO_DATA)
+
+    fun setDemoData(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_DEMO_DATA, enabled).apply()
     }
 }

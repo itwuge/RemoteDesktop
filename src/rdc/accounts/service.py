@@ -15,14 +15,18 @@
 
 from __future__ import annotations
 
+import platform
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import wraps
 from typing import Any
 
 from rdc.accounts.db import AccountStoreError
+from rdc.accounts.remote import RemoteAccountClient, RemoteRejected, RemoteUnavailable
+from rdc.accounts.session_store import SessionVault
 from rdc.accounts.store import (
     DEVICE_TOKEN_TTL_SECONDS,
     GRANT_DEFAULT_TTL_SECONDS,
@@ -31,6 +35,7 @@ from rdc.accounts.store import (
     AccountStore,
     DeviceRecord,
     _iso,
+    _iso_utc,
     scope_covers,
 )
 from rdc.core.errors import (
@@ -44,6 +49,7 @@ from rdc.core.errors import (
     PERMISSION_DENIED,
     REQUEST_NOT_FOUND,
     SCOPE_INVALID,
+    SIGNALING_UNREACHABLE,
     TOKEN_EXPIRED,
     TOKEN_REVOKED,
 )
@@ -53,6 +59,25 @@ ACCOUNT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 ACCESS_CODE_PATTERN = re.compile(r"^\d{6}$")
 SCOPES = frozenset({"view", "control", "full"})
 ACCESS_ROUTES = ("existing_session", "passwordless", "grant", "approval", "denied")
+
+
+def _as_float(value: Any) -> float:
+    """把密文仓中的时间字段转为 epoch 秒; 非法值按 0 处理."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _epoch(value: Any) -> float:
+    """把服务端 ISO 8601 时间转为 epoch 秒; 非法或缺失按 0 处理."""
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _storage_guarded(func: Callable[..., CommandResult]) -> Callable[..., CommandResult]:
@@ -85,6 +110,21 @@ class AccountService:
     access_code_check: Callable[[str, str], bool] = field(
         default=lambda device_id, code: bool(ACCESS_CODE_PATTERN.fullmatch(code or ""))
     )
+    # 跨端账号中心: 配置后账号、设备、信任与审计走服务端; 未配置时保持本地行为
+    remote: RemoteAccountClient | None = field(default=None, repr=False)
+    session_store: SessionVault | None = field(default=None, repr=False)
+    account_name: str | None = None
+    account_created_at: str = ""
+    device_token: str | None = field(default=None, repr=False)
+    session_token: str | None = field(default=None, repr=False)
+    remote_expires_at: float = 0.0
+    remote_device_expires_at: float = 0.0
+    _passwordless_audited: dict[str, float] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        """恢复密文登录态; 只在远端模式且内存未绑定时执行."""
+        if self.session_store is not None and self.remote is not None and self.session_account_id is None:
+            self._restore_session()
 
     # ------------------------------------------------------------------ 内部
     def register_device(self, device_id: str, display_name: str = "") -> None:
@@ -99,6 +139,13 @@ class AccountService:
 
     def _current_session_error(self) -> CommandResult | None:
         """校验当前登录会话; 吊销与过期即时失效, 不允许旧会话继续调用命令."""
+        if self.remote is not None:
+            if not self.session_account_id or not self.device_token:
+                return CommandResult(ok=False, message="请先登录账号", error_code=CREDENTIAL_INVALID)
+            if self.remote_expires_at and self.remote_expires_at <= time.time():
+                self._clear_session_state()
+                return CommandResult(ok=False, message="登录状态已过期, 请重新登录", error_code=TOKEN_EXPIRED)
+            return None
         if not self.session_account_id or not self.session_token_hash:
             return CommandResult(ok=False, message="请先登录账号", error_code=CREDENTIAL_INVALID)
         record = self.store.tokens.get(self.session_token_hash)
@@ -107,6 +154,132 @@ class AccountService:
         if record.expires_at <= time.time():
             return CommandResult(ok=False, message="登录状态已过期, 请重新登录", error_code=TOKEN_EXPIRED)
         return None
+
+    # ------------------------------------------------------------------ 远端会话
+    def _restore_session(self) -> None:
+        """从密文仓恢复登录态; 过期或损坏时清空, 不阻塞启动."""
+        assert self.session_store is not None
+        payload = self.session_store.load()
+        if not payload:
+            return
+        account_id = str(payload.get("account_id") or "")
+        device_token = str(payload.get("device_token") or "")
+        device_expires = _as_float(payload.get("device_expires_at"))
+        if not account_id or not device_token:
+            self.session_store.clear()
+            return
+        if device_expires and device_expires <= time.time():
+            self.session_store.clear()
+            return
+        self.session_account_id = account_id
+        self.account_name = str(payload.get("account_name") or "") or None
+        self.account_created_at = str(payload.get("account_created_at") or "")
+        self.session_device_id = str(payload.get("device_id") or "") or None
+        self.device_token = device_token
+        self.session_token = str(payload.get("session_token") or "") or None
+        self.remote_expires_at = _as_float(payload.get("session_expires_at"))
+        self.remote_device_expires_at = device_expires
+
+    def _persist_session(self) -> None:
+        """把登录态写入密文仓; 写失败只告警, 内存态继续可用."""
+        if self.session_store is None or not self.session_account_id or not self.device_token:
+            return
+        self.session_store.save(
+            {
+                "account_id": self.session_account_id,
+                "account_name": self.account_name or "",
+                "account_created_at": self.account_created_at,
+                "device_id": self.session_device_id or "",
+                "device_token": self.device_token,
+                "session_token": self.session_token or "",
+                "session_expires_at": self.remote_expires_at,
+                "device_expires_at": self.remote_device_expires_at,
+            }
+        )
+
+    def _clear_session_state(self) -> None:
+        """清空内存登录态与密文仓; 退出登录与令牌失效共用."""
+        self.session_account_id = None
+        self.session_device_id = None
+        self.session_token_hash = None
+        self.device_token_hash = None
+        self.device_token = None
+        self.session_token = None
+        self.account_name = None
+        self.account_created_at = ""
+        self.remote_expires_at = 0.0
+        self.remote_device_expires_at = 0.0
+        if self.session_store is not None:
+            self.session_store.clear()
+
+    def _remote_failure(self, exc: RemoteRejected) -> CommandResult:
+        """把服务端业务错误翻译成命令结果; 令牌失效时同步清理本地登录态."""
+        if exc.code in (TOKEN_REVOKED, TOKEN_EXPIRED, "TOKEN_INVALID"):
+            self._clear_session_state()
+        return CommandResult(ok=False, message=exc.message, error_code=exc.code)
+
+    def _remote_unavailable(self, exc: RemoteUnavailable) -> CommandResult:
+        """账号中心不可达: 返回明确中文原因, 不伪造成功."""
+        return CommandResult(ok=False, message=str(exc), error_code=SIGNALING_UNREACHABLE)
+
+    def _login_remote(self, account: str, password: str) -> CommandResult:
+        """远端登录: 带设备身份声明, 成功后把登录态写入密文仓."""
+        assert self.remote is not None
+        try:
+            data = self.remote.login(account, password, device_name=platform.node())
+        except RemoteRejected as exc:
+            return self._remote_failure(exc)
+        except RemoteUnavailable as exc:
+            return self._remote_unavailable(exc)
+        account_id = str(data.get("account_id") or "")
+        device_token = str(data.get("device_token") or "")
+        session_token = str(data.get("session_token") or "")
+        if not account_id or not device_token or not session_token:
+            return CommandResult(ok=False, message="账号中心登录响应不完整", error_code=SIGNALING_UNREACHABLE)
+        self.session_account_id = account_id
+        self.account_name = str(data.get("account_name") or account)
+        self.account_created_at = _iso_utc(str(data.get("created_at") or ""))
+        self.session_device_id = str(data.get("device_id") or "") or None
+        self.session_token_hash = None
+        self.device_token_hash = None
+        self.device_token = device_token
+        self.session_token = session_token
+        self.remote_expires_at = _epoch(data.get("expires_at"))
+        self.remote_device_expires_at = _epoch(data.get("device_expires_at"))
+        self._persist_session()
+        return CommandResult(
+            ok=True,
+            message="登录成功",
+            data={
+                "account_id": account_id,
+                "device_id": self.session_device_id,
+                "device_token": device_token,
+                "session_token": session_token,
+                "expires_at": str(data.get("expires_at") or ""),
+                "trusted": bool(data.get("trusted")),
+            },
+        )
+
+    def _refresh_remote(self, device_token: str) -> CommandResult:
+        """远端刷新会话令牌; 长期设备令牌本身不轮换."""
+        assert self.remote is not None
+        try:
+            data = self.remote.refresh(device_token)
+        except RemoteRejected as exc:
+            return self._remote_failure(exc)
+        except RemoteUnavailable as exc:
+            return self._remote_unavailable(exc)
+        session_token = str(data.get("session_token") or "")
+        if not session_token:
+            return CommandResult(ok=False, message="账号中心未返回会话令牌", error_code=SIGNALING_UNREACHABLE)
+        self.session_token = session_token
+        self.remote_expires_at = _epoch(data.get("expires_at"))
+        self._persist_session()
+        return CommandResult(
+            ok=True,
+            message="会话令牌已刷新",
+            data={"session_token": session_token, "expires_at": str(data.get("expires_at") or "")},
+        )
 
     def _is_owner(self, device: DeviceRecord) -> bool:
         """当前登录账号是否为设备所有者."""
@@ -152,6 +325,16 @@ class AccountService:
         if failure is not None:
             return None, failure
         account = self.store.accounts.get(self.session_account_id or "")
+        if account is None and self.remote is not None and self.session_account_id:
+            # 远端账号不落本地口令库; 用只含标识与名称的占位记录满足命令层读取
+            account = Account(
+                account_id=self.session_account_id,
+                name=self.account_name or "",
+                salt=b"",
+                password_hash=b"",
+                created_at="",
+                password_changed_at="",
+            )
         if account is None:
             return None, CommandResult(ok=False, message="账号不存在", error_code=ACCOUNT_NOT_FOUND)
         return account, None
@@ -164,6 +347,21 @@ class AccountService:
             return CommandResult(ok=False, message="账号需为 3 至 64 位字母、数字或 _ . @ -")
         if len(password or "") < 8:
             return CommandResult(ok=False, message="口令至少 8 位")
+        if self.remote is not None:
+            try:
+                data = self.remote.register(account, password)
+            except RemoteRejected as exc:
+                return self._remote_failure(exc)
+            except RemoteUnavailable as exc:
+                return self._remote_unavailable(exc)
+            return CommandResult(
+                ok=True,
+                message="账号已创建",
+                data={
+                    "account_id": str(data.get("account_id") or ""),
+                    "created_at": str(data.get("created_at") or ""),
+                },
+            )
         if self.store.find_account_by_name(account):
             return CommandResult(ok=False, message="账号已存在, 请直接登录")
 
@@ -178,6 +376,8 @@ class AccountService:
     @_storage_guarded
     def login_account(self, account: str, password: str) -> CommandResult:
         """登录并签发长期设备令牌与短时会话令牌."""
+        if self.remote is not None:
+            return self._login_remote(account, password)
         found = self.store.find_account_by_name(account)
         if found is None:
             self.store.append_audit("account.login", account, account, "fail", reason="account_not_found")
@@ -194,6 +394,8 @@ class AccountService:
         )
         self._bind_session(found.account_id, None, session_record.token_hash)
         self.device_token_hash = device_record.token_hash
+        self.account_name = found.name
+        self.account_created_at = found.created_at
         self.store.append_audit("account.login", found.account_id, found.account_id, "ok")
         return CommandResult(
             ok=True,
@@ -209,6 +411,8 @@ class AccountService:
     @_storage_guarded
     def refresh_session_token(self, device_token: str) -> CommandResult:
         """用长期设备令牌换短时会话令牌; 吊销与过期一律拒绝."""
+        if self.remote is not None:
+            return self._refresh_remote(device_token)
         record = self.store.lookup_token(device_token)
         if record is None or record.kind != "device":
             return CommandResult(ok=False, message="设备令牌无效", error_code=TOKEN_REVOKED)
@@ -222,6 +426,10 @@ class AccountService:
         )
         self._bind_session(record.account_id, record.device_id, session_record.token_hash)
         self.device_token_hash = record.token_hash
+        owner = self.store.accounts.get(record.account_id)
+        if owner is not None:
+            self.account_name = owner.name
+            self.account_created_at = owner.created_at
         return CommandResult(
             ok=True,
             message="会话令牌已刷新",
@@ -306,7 +514,18 @@ class AccountService:
         )
 
     def list_devices(self) -> CommandResult:
-        """当前账号可见设备; 追加在线状态与最近心跳时间."""
+        """当前账号可见设备; 追加在线状态、受信标记与最近连接时间."""
+        failure = self._current_session_error()
+        if failure:
+            return failure
+        if self.remote is not None:
+            try:
+                items = self.remote.list_devices(self.device_token or "")
+            except RemoteRejected as exc:
+                return self._remote_failure(exc)
+            except RemoteUnavailable as exc:
+                return self._remote_unavailable(exc)
+            return CommandResult(ok=True, message=f"共 {len(items)} 台设备", data={"items": items})
         account, failure = self._require_account()
         if failure:
             return failure
@@ -318,19 +537,24 @@ class AccountService:
                 {
                     "device_id": device.device_id,
                     "display_name": device.display_name,
+                    "platform": device.platform,
                     "bound_at": device.bound_at,
                     "online": state == "online",
                     "presence_state": state,
                     "last_seen_at": _iso(device.last_seen_at) if device.last_seen_at else None,
                     "require_confirm": device.require_confirm,
+                    "trusted": bool(device.owner_account_id == account.account_id and not device.require_confirm),
+                    "trust_source": device.trust_source,
+                    "trusted_at": _iso(device.trusted_at) if device.trusted_at else None,
+                    "last_connected_at": _iso(device.last_connected_at) if device.last_connected_at else None,
                     "owner": device.owner_account_id == account.account_id,
                 }
             )
         return CommandResult(ok=True, message=f"共 {len(items)} 台设备", data={"items": items})
 
-    def record_presence(self, device_id: str, state: str = "online") -> bool:
+    def record_presence(self, device_id: str, state: str = "online", platform: str = "") -> bool:
         """记录信令服务上报的设备级心跳; 只影响在线显示, 不参与鉴权."""
-        return self.store.record_presence(device_id, state)
+        return self.store.record_presence(device_id, state, platform=platform)
 
     def presence_state(self, device_id: str) -> str:
         """查询在线状态: online、offline 或 unknown."""
@@ -338,10 +562,40 @@ class AccountService:
 
     @_storage_guarded
     def set_trust_policy(self, device_id: str, require_confirm: bool) -> CommandResult:
-        """切换免确认开关; 默认 require_confirm=False 即免确认开启.
+        """切换信任状态; 默认 require_confirm=True, 传 False 表示显式「信任此设备」.
 
-        启动被控端本机与设备所有者都可对单台设备关闭免确认; 变更进审计.
+        启动被控端本机与设备所有者都可对单台设备切换; 变更进审计, 撤销信任立即生效.
         """
+        if self.remote is not None:
+            failure = self._current_session_error()
+            if failure:
+                return failure
+            try:
+                data = self.remote.set_trust(self.device_token or "", device_id, not require_confirm)
+            except RemoteRejected as exc:
+                return self._remote_failure(exc)
+            except RemoteUnavailable as exc:
+                return self._remote_unavailable(exc)
+            items = data.get("items")
+            item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+            trusted = bool(item.get("trusted", not require_confirm))
+            cached = self.store.devices.get(device_id)
+            if cached is not None:
+                cached.require_confirm = not trusted
+                cached.trust_source = str(item.get("trust_source") or "")
+                self.store.save_device(cached)
+            return CommandResult(
+                ok=True,
+                message="免确认已关闭, 后续连接需审批" if not trusted else "免确认已开启, 同账号直连免审批",
+                data={
+                    "device_id": device_id,
+                    "require_confirm": not trusted,
+                    "trusted": trusted,
+                    "trust_source": str(item.get("trust_source") or ""),
+                    "trusted_at": item.get("trusted_at"),
+                    "updated_at": _iso(time.time()),
+                },
+            )
         account, failure = self._require_account()
         if failure:
             return failure
@@ -355,21 +609,31 @@ class AccountService:
             )
 
         device.require_confirm = bool(require_confirm)
-        self.store.save_device(device)
         source = "device" if self._is_device_side(device) else "owner"
+        updated = self.store.set_device_trust(device_id, not require_confirm, source)
+        assert updated is not None
         self.store.append_audit(
             "trust_policy.change",
             account.account_id,
             device_id,
             "ok",
             device_id=device_id,
-            require_confirm=device.require_confirm,
+            require_confirm=updated.require_confirm,
+            trusted=not updated.require_confirm,
             source=source,
+            trusted_at=_iso(updated.trusted_at) if updated.trusted_at else "",
         )
         return CommandResult(
             ok=True,
-            message="免确认已关闭, 后续连接需审批" if device.require_confirm else "免确认已开启, 同账号直连免审批",
-            data={"device_id": device_id, "require_confirm": device.require_confirm, "updated_at": _iso(time.time())},
+            message="免确认已关闭, 后续连接需审批" if updated.require_confirm else "免确认已开启, 同账号直连免审批",
+            data={
+                "device_id": device_id,
+                "require_confirm": updated.require_confirm,
+                "trusted": not updated.require_confirm,
+                "trust_source": updated.trust_source,
+                "trusted_at": _iso(updated.trusted_at) if updated.trusted_at else None,
+                "updated_at": _iso(time.time()),
+            },
         )
 
     # ------------------------------------------------------------- 授权命令
@@ -587,6 +851,8 @@ class AccountService:
     @_storage_guarded
     def logout_account(self) -> CommandResult:
         """登出: 吊销本机设备令牌与会话令牌, 并踢出关联会话."""
+        if self.remote is not None:
+            return self._logout_remote()
         if not self.session_account_id and not self.session_token_hash and not self.device_token_hash:
             return CommandResult(ok=False, message="当前未登录")
         account_id = self.session_account_id or ""
@@ -615,6 +881,63 @@ class AccountService:
                 "account_id": account_id,
                 "status": "logged_out",
                 "revoked_at": _iso(now),
+                "kicked_sessions": kicked,
+            },
+        )
+
+    def _cache_remote_audits(self, items: list[dict[str, Any]], device_id: str) -> None:
+        """把服务端审计缓存到本地库, 供消息中心按既有读取路径展示; 按 (时间, 事件, 对象) 去重."""
+        existing = {(event.ts, event.event, event.actor, event.target) for event in self.store.audit}
+        for item in items:
+            key = (
+                str(item.get("ts") or item.get("created_at") or ""),
+                str(item.get("event") or ""),
+                str(item.get("actor") or ""),
+                str(item.get("target") or device_id),
+            )
+            if key in existing:
+                continue
+            existing.add(key)
+            detail = item.get("detail")
+            self.store.append_audit(
+                key[1],
+                key[2],
+                key[3],
+                str(item.get("result") or "ok"),
+                ts=key[0],
+                **(detail if isinstance(detail, dict) else {}),
+            )
+
+    def _logout_remote(self) -> CommandResult:
+        """远端登出: 先让服务端吊销并断链, 成功后才清空本地密文仓."""
+        assert self.remote is not None
+        token = self.device_token or self.session_token or ""
+        if not self.session_account_id or not token:
+            return CommandResult(ok=False, message="当前未登录")
+        account_id = self.session_account_id
+        try:
+            data = self.remote.logout(token)
+        except RemoteRejected as exc:
+            if exc.code in (TOKEN_REVOKED, TOKEN_EXPIRED, "TOKEN_INVALID"):
+                self._clear_session_state()
+                return CommandResult(
+                    ok=True,
+                    message="登录状态已失效, 已清理本地登录态",
+                    data={"account_id": account_id, "status": "logged_out", "revoked_at": _iso(time.time())},
+                )
+            return self._remote_failure(exc)
+        except RemoteUnavailable as exc:
+            return self._remote_unavailable(exc)
+        self._clear_session_state()
+        revoked = int(data.get("revoked_tokens") or 0)
+        kicked = int(data.get("kicked_connections") or 0)
+        return CommandResult(
+            ok=True,
+            message=f"已登出, 吊销 {revoked} 个令牌, 断开 {kicked} 个会话",
+            data={
+                "account_id": account_id,
+                "status": "logged_out",
+                "revoked_at": _iso(time.time()),
                 "kicked_sessions": kicked,
             },
         )
@@ -807,6 +1130,18 @@ class AccountService:
 
     def get_audit_log(self, device_id: str, since: str = "") -> CommandResult:
         """按设备读审计; 仅设备所有者或被控端本机可读."""
+        if self.remote is not None:
+            failure = self._current_session_error()
+            if failure:
+                return failure
+            try:
+                items = self.remote.audits(self.device_token or "", device_id, since)
+            except RemoteRejected as exc:
+                return self._remote_failure(exc)
+            except RemoteUnavailable as exc:
+                return self._remote_unavailable(exc)
+            self._cache_remote_audits(items, device_id)
+            return CommandResult(ok=True, message=f"共 {len(items)} 条审计", data={"items": items})
         account, failure = self._require_account()
         if failure:
             return failure
@@ -835,6 +1170,69 @@ class AccountService:
             return {"route": "denied", "reason": "会话令牌与目标设备不一致"}
         return {"route": "existing_session", "reason": "会话已建立", "session_id": f"session-{record.token_hash[:12]}"}
 
+    def account_state(self) -> CommandResult:
+        """返回界面可直接消费的登录态; 白名单字段, 不向界面暴露任何令牌."""
+        logged_in = bool(
+            self.session_account_id and (self.device_token is not None or self.session_token_hash is not None)
+        )
+        expires = self.remote_expires_at if self.remote is not None else 0.0
+        return CommandResult(
+            ok=True,
+            message="已登录" if logged_in else "未登录",
+            data={
+                "logged_in": logged_in,
+                "account_id": self.session_account_id,
+                "account_name": self.account_name,
+                "created_at": _iso_utc(self.account_created_at) if self.account_created_at else None,
+                "device_id": self.session_device_id,
+                "remote": self.remote is not None,
+                "expires_at": _iso(expires) if expires else None,
+            },
+        )
+
+    def authorize_connection(
+        self,
+        device_id: str,
+        scope: str = "control",
+        existing_session: str = "",
+        session_id: str = "",
+    ) -> CommandResult:
+        """受信设备免码准入并写一次审计; 供互控线在会话入口调用.
+
+        设备签名、hs=2 握手与 AEAD 校验仍由会话层执行, 本函数只做账号与信任判定.
+        """
+        if scope not in SCOPES:
+            return CommandResult(ok=False, message="scope 只能为 view、control 或 full", error_code=SCOPE_INVALID)
+        data = self.resolve_access(
+            device_id,
+            scope,
+            existing_session or None,
+            consume=True,
+            session_id=session_id,
+        )
+        if data.get("route") == "denied":
+            code = str(data.get("error_code") or "")
+            if code in (TOKEN_REVOKED, TOKEN_EXPIRED, CREDENTIAL_INVALID):
+                return CommandResult(ok=False, message=str(data.get("reason") or "登录状态已失效"), error_code=code)
+            return CommandResult(
+                ok=False,
+                message=str(data.get("reason") or "连接准入被拒绝"),
+                error_code=PERMISSION_DENIED,
+            )
+        return CommandResult(ok=True, message=str(data.get("reason") or "准入判定完成"), data=data)
+
+    def _allow_passwordless_audit(self, device_id: str, session_id: str) -> bool:
+        """免码审计去重: 同一 session_id 只记一次; 无会话号时按分钟窗口兜底."""
+        key = session_id or f"{self.session_account_id}:{device_id}:{int(time.time() // 60)}"
+        now = time.time()
+        seen = self._passwordless_audited.get(key)
+        if seen is not None and now - seen < 24 * 3600:
+            return False
+        self._passwordless_audited[key] = now
+        for name in [item for item, stamp in self._passwordless_audited.items() if now - stamp >= 24 * 3600]:
+            self._passwordless_audited.pop(name, None)
+        return True
+
     def resolve_access(
         self,
         device_id: str,
@@ -842,6 +1240,7 @@ class AccountService:
         existing_session: str | None = None,
         *,
         consume: bool = True,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """按契约 v1.3 第二节顺序判定连接路径.
 
@@ -849,12 +1248,30 @@ class AccountService:
         免确认只免连接码与逐次确认, 不免握手、加密与审计.
         :param consume: 命中一次性授权时是否立即标记已用; 仅做可行性预检时传 False.
         """
+        if self.remote is not None:
+            failure = self._current_session_error()
+            if failure is not None:
+                return {"route": "denied", "reason": failure.message, "error_code": failure.error_code}
+            try:
+                return self.remote.resolve_access(
+                    self.device_token or "",
+                    device_id,
+                    scope,
+                    existing_session or "",
+                    session_id,
+                    dry_run=not consume,
+                )
+            except RemoteRejected as exc:
+                return {"route": "denied", "reason": exc.message, "error_code": exc.code}
+            except RemoteUnavailable as exc:
+                return {"route": "denied", "reason": str(exc), "error_code": SIGNALING_UNREACHABLE}
+
         if existing_session:
             return self._resolve_existing_session(device_id, existing_session)
 
         failure = self._current_session_error()
         if failure is not None:
-            return {"route": "denied", "reason": failure.message}
+            return {"route": "denied", "reason": failure.message, "error_code": failure.error_code}
 
         device = self.store.devices.get(device_id)
         if device is None:
@@ -862,6 +1279,19 @@ class AccountService:
 
         same_account = device.owner_account_id == self.session_account_id
         if same_account and not device.require_confirm:
+            if consume and self._allow_passwordless_audit(device_id, session_id):
+                account = self.store.accounts.get(self.session_account_id or "")
+                self.store.append_audit(
+                    "access.passwordless",
+                    self.session_account_id or "",
+                    device_id,
+                    "ok",
+                    device_id=device_id,
+                    device_name=device.display_name,
+                    account_name=account.name if account is not None else "",
+                    route="passwordless",
+                    session_id=session_id,
+                )
             return {"route": "passwordless", "reason": "同账号且设备免确认开启"}
 
         grant = self.store.find_active_grant(device_id, self.session_account_id or "", scope, consume=consume)

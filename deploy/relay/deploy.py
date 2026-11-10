@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import os
 import platform
@@ -55,6 +56,16 @@ class DeployError(RuntimeError):
     """部署失败, 携带可直接执行的修复提示."""
 
 
+def config_tls_enabled(content: str) -> bool:
+    """读取配置文本里的 [tls] tls_enabled; 缺省按关闭处理, 与运行时默认一致."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(content)
+        return parser.getboolean("tls", "tls_enabled", fallback=False)
+    except (configparser.Error, ValueError) as error:
+        raise DeployError(f"配置内容无法解析: {error}") from error
+
+
 class Deployer:
     """幂等部署器: 每一步先检查现状, 再决定是否动作."""
 
@@ -77,6 +88,8 @@ class Deployer:
         self._install_config()
         self._install_unit()
         self._start_service()
+        self._install_cert_timer()
+        self._install_journal_limit()
         self._report()
         return 0
 
@@ -89,6 +102,10 @@ class Deployer:
                 ("配置模板", Path(self.args.config_source)),
                 ("systemd 模板", Path(__file__).parent / "rdc-relay.service.tmpl"),
                 ("健康检查", Path(__file__).parent / "healthcheck.py"),
+                ("证书巡检脚本", Path(__file__).parent / "cert_check.sh"),
+                ("证书巡检单元", Path(__file__).parent / "rdc-cert-check.service.tmpl"),
+                ("证书巡检定时器", Path(__file__).parent / "rdc-cert-check.timer.tmpl"),
+                ("journald 上限", Path(__file__).parent / "journald-rdc.conf"),
                 ("源码目录", self.root / "src" / "rdc"),
             ):
                 if not path.exists():
@@ -137,8 +154,15 @@ class Deployer:
         self._act(
             f"创建系统账号 {self.args.user}",
             [
-                "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin",
-                "--home-dir", self.args.prefix, "--user-group", self.args.user,
+                "useradd",
+                "--system",
+                "--no-create-home",
+                "--shell",
+                "/usr/sbin/nologin",
+                "--home-dir",
+                self.args.prefix,
+                "--user-group",
+                self.args.user,
             ],
         )
 
@@ -185,6 +209,11 @@ class Deployer:
             self._unchanged(f"配置已存在, 保持不动: {target}")
             return
         content = source.read_text(encoding="utf-8")
+        if not config_tls_enabled(content) and not self.args.allow_disable_tls:
+            raise DeployError(
+                "拒绝写入: 配置中 tls_enabled=false, 会把 8750 降为明文; "
+                "安全默认必须开启 TLS, 如确需明文调试请显式加 --allow-disable-tls"
+            )
         if self._write(target, content, 0o640):
             self.changed.append(f"配置 {target}")
             self.needs_restart = True
@@ -224,7 +253,9 @@ class Deployer:
         for _ in range(20):
             check = subprocess.run(
                 [sys.executable, str(Path(__file__).parent / "healthcheck.py"), self.args.config],
-                capture_output=True, text=True, check=False,
+                capture_output=True,
+                text=True,
+                check=False,
             )
             if check.returncode == 0:
                 break
@@ -232,6 +263,50 @@ class Deployer:
         print(check.stdout.strip() or check.stderr.strip())
         if check.returncode != 0:
             raise DeployError("健康检查未通过; 查看日志: journalctl -u rdc-relay -n 100 --no-pager")
+
+    def _install_cert_timer(self) -> None:
+        """安装证书巡检 oneshot 与每日 timer; 只新增单元, 不触碰 relay 服务."""
+        base = Path(__file__).parent
+        script_target = Path(self.args.prefix) / "bin" / "cert_check.sh"
+        files = {
+            Path(self.args.prefix) / "bin" / "cert_check.py": (base / "cert_check.py").read_text(encoding="utf-8"),
+            script_target: (base / "cert_check.sh")
+            .read_text(encoding="utf-8")
+            .replace("@PYTHON@", self.args.python)
+            .replace("@CONFIG@", self.args.config),
+        }
+        for target, content in files.items():
+            if self._write(target, content, 0o750):
+                self.changed.append(f"证书巡检文件 {target}")
+                if not self.args.dry_run:
+                    shutil.chown(target, self.args.user, self.args.group)
+        context = {"@USER@": self.args.user, "@GROUP@": self.args.group, "@SCRIPT@": str(script_target)}
+        unit_changed = False
+        for name in ("rdc-cert-check.service", "rdc-cert-check.timer"):
+            content = (base / f"{name}.tmpl").read_text(encoding="utf-8")
+            for key, value in context.items():
+                content = content.replace(key, value)
+            if self._write(Path("/etc/systemd/system") / name, content, 0o644):
+                unit_changed = True
+                self.changed.append(f"systemd 单元 {name}")
+        if unit_changed:
+            self._act("systemctl daemon-reload", ["systemctl", "daemon-reload"])
+        enabled = self._query(["systemctl", "is-enabled", "rdc-cert-check.timer"]) == "enabled"
+        active = self._query(["systemctl", "is-active", "rdc-cert-check.timer"]) == "active"
+        if enabled and active and not unit_changed:
+            self._unchanged("证书巡检 timer 已启用并在运行")
+        else:
+            self._act("启用并启动 rdc-cert-check.timer", ["systemctl", "enable", "--now", "rdc-cert-check.timer"])
+
+    def _install_journal_limit(self) -> None:
+        """限制 journald 总量, 防长跑写满磁盘; 只影响 journald, 不重启业务服务."""
+        target = Path("/etc/systemd/journald.conf.d/rdc.conf")
+        content = (Path(__file__).parent / "journald-rdc.conf").read_text(encoding="utf-8")
+        if not self._write(target, content, 0o644):
+            self._unchanged(f"journald 容量上限一致: {target}")
+            return
+        self.changed.append(f"journald 容量上限 {target}")
+        self._act("重启 systemd-journald 加载容量上限", ["systemctl", "restart", "systemd-journald"])
 
     # ------------------------------------------------------------------ 工具
     def _act(self, message: str, command: list[str] | None) -> None:
@@ -277,7 +352,8 @@ class Deployer:
             return False
         result = subprocess.run(
             [command, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)"],
-            capture_output=True, check=False,
+            capture_output=True,
+            check=False,
         )
         return result.returncode == 0
 
@@ -333,20 +409,30 @@ class Deployer:
 def build_parser() -> argparse.ArgumentParser:
     """构造命令行参数."""
     parser = argparse.ArgumentParser(description="RDC 信令与中继服务部署")
-    parser.add_argument("--config", dest="config_source", default=str(Path(__file__).parent / "relay.conf.example"),
-                        help="配置模板路径, 部署时写入目标机")
-    parser.add_argument("--config-target", default=DEFAULTS["config"],
-                        help=f"目标机配置文件路径, 默认 {DEFAULTS['config']}")
+    parser.add_argument(
+        "--config",
+        dest="config_source",
+        default=str(Path(__file__).parent / "relay.conf.example"),
+        help="配置模板路径, 部署时写入目标机",
+    )
+    parser.add_argument(
+        "--config-target", default=DEFAULTS["config"], help=f"目标机配置文件路径, 默认 {DEFAULTS['config']}"
+    )
     parser.add_argument("--prefix", default=DEFAULTS["prefix"])
     parser.add_argument("--user", default=DEFAULTS["user"])
     parser.add_argument("--group", default=DEFAULTS["group"])
     parser.add_argument("--logdir", default=DEFAULTS["logdir"])
-    parser.add_argument("--python", default="/usr/bin/python3",
-                        help="systemd 单元使用的解释器路径, 默认 /usr/bin/python3")
-    parser.add_argument("--unit", default=DEFAULTS["unit"],
-                        help=f"systemd 单元路径, 默认 {DEFAULTS['unit']}")
+    parser.add_argument(
+        "--python", default="/usr/bin/python3", help="systemd 单元使用的解释器路径, 默认 /usr/bin/python3"
+    )
+    parser.add_argument("--unit", default=DEFAULTS["unit"], help=f"systemd 单元路径, 默认 {DEFAULTS['unit']}")
     parser.add_argument("--dry-run", action="store_true", help="只打印动作, 不修改目标机")
     parser.add_argument("--force-config", action="store_true", help="覆盖已有配置")
+    parser.add_argument(
+        "--allow-disable-tls",
+        action="store_true",
+        help="显式允许写入 tls_enabled=false 的配置(明文, 仅限调试)",
+    )
     parser.add_argument("--no-restart", action="store_true", help="不重启已在运行的服务")
     parser.add_argument("--allow-unsupported", action="store_true", help="允许非 Ubuntu 20.04/22.04 x86_64")
     return parser

@@ -89,6 +89,12 @@ def _run_pyinstaller(dist_dir: Path, work_dir: Path, spec_dir: Path, icon_path: 
         str(work_dir),
         "--specpath",
         str(spec_dir),
+        "--add-data",
+        f"{PROJECT_ROOT / 'src' / 'rdc' / 'ui' / 'assets'}:rdc/ui/assets",
+        "--add-data",
+        f"{PROJECT_ROOT / 'deploy' / 'relay' / 'ca.crt'}:rdc/ui/assets",
+        "--add-data",
+        f"{PROJECT_ROOT / 'deploy' / 'relay' / 'ca.crt'}:rdc/assets",
     ]
     if icon_path is not None:
         command.extend(["--icon", str(icon_path)])

@@ -1,0 +1,2547 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDC 远程桌面 · 安卓控制端原型 v2</title>
+<!-- 唯一现行 UI 基准：docs/design/ui-v2/。与桌面原型共用 docs/design/ui-v2/design-tokens.json 的令牌。 -->
+<style>
+:root{
+  --bg:#0b0e13; --panel:#121820; --panel-2:#0f141b; --panel-3:#1a212b;
+  --card:#141a23; --input-bg:#0e131a; --hover:#1a222d;
+  --line:#222b37; --line-strong:#2e3947;
+  --text:#e7edf6; --muted:#8b98aa; --faint:#5e6b7d;
+  --accent:#4d8dff; --accent-hover:#679eff; --accent-strong:#9dc0ff; --accent-soft:rgba(77,141,255,.14);
+  --ok:#3fc996; --ok-soft:rgba(63,201,150,.12); --ok-border:rgba(63,201,150,.32);
+  --warn:#e0a955; --warn-soft:rgba(224,169,85,.13); --warn-border:rgba(224,169,85,.32);
+  --danger:#ea6a6a; --danger-soft:rgba(234,106,106,.12); --danger-border:rgba(234,106,106,.32);
+  --shadow:0 30px 90px rgba(0,0,0,.55);
+  --card-shadow:0 1px 2px rgba(0,0,0,.22);
+  --brand-from:#5b97ff; --brand-to:#2f63d8;
+  --on-media:#c7d2e0; --on-media-strong:#9fb0c6;
+  --media-text:#c7d2e0; --media-text-strong:#9fb0c6;
+  --media-fill:rgba(255,255,255,.06); --media-fill-strong:rgba(255,255,255,.08); --media-line:rgba(255,255,255,.14);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+body.light{
+  --bg:#eef1f6; --panel:#ffffff; --panel-2:#f5f7fa; --panel-3:#eef2f7;
+  --card:#ffffff; --input-bg:#fbfcfe; --hover:#eef2f8;
+  --line:#dfe5ed; --line-strong:#cbd4df;
+  --text:#1d2733; --muted:#5f6d7e; --faint:#8c98a6;
+  --accent:#2f6fe0; --accent-hover:#245fc8; --accent-strong:#1f57b8; --accent-soft:rgba(47,111,224,.1);
+  --ok:#16865f; --ok-soft:rgba(22,134,95,.1); --ok-border:rgba(22,134,95,.28);
+  --warn:#a76b12; --warn-soft:rgba(167,107,18,.1); --warn-border:rgba(167,107,18,.28);
+  --danger:#c54545; --danger-soft:rgba(197,69,69,.09); --danger-border:rgba(197,69,69,.28);
+  --shadow:0 24px 70px rgba(38,52,72,.16);
+  --card-shadow:0 1px 2px rgba(38,52,72,.06);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--text);font-size:13px;line-height:1.55;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",sans-serif;
+  -webkit-font-smoothing:antialiased;color-scheme:dark;
+}
+body.light{color-scheme:light}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.tiny{font-size:11px;color:var(--faint)}
+.hidden{display:none !important}
+.gap{border-bottom:1px dashed var(--faint);cursor:help;text-decoration:none}
+
+/* 顶部工具条 */
+.topbar{
+  position:sticky;top:0;z-index:120;height:58px;display:flex;align-items:center;gap:14px;
+  padding:0 24px;background:var(--bg);border-bottom:1px solid var(--line);
+}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-mark{
+  width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:0 0 auto;
+  background:linear-gradient(150deg,var(--brand-from),var(--brand-to));color:#fff;font-weight:700;font-size:15px;
+  box-shadow:0 4px 14px rgba(47,111,224,.26);
+}
+.brand strong{display:block;font-size:13px;line-height:1.25}
+.brand span{display:block;font-size:10.5px;color:var(--faint);letter-spacing:.04em}
+.topbar-tag{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:var(--panel-2);white-space:nowrap}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.seg-label{font-size:10px;color:var(--faint);letter-spacing:.06em}
+.seg{display:flex;gap:2px;padding:3px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px}
+.seg button{height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:11.5px}
+.seg button:hover{color:var(--text)}
+.seg button.active{background:var(--panel-3);color:var(--text);box-shadow:var(--card-shadow)}
+.seg button:disabled{opacity:.42;cursor:not-allowed}
+.pill-note{font-size:10.5px;color:var(--faint);border:1px dashed var(--line-strong);border-radius:999px;padding:4px 9px;white-space:nowrap}
+
+/* 舞台 */
+.stage{max-width:1320px;margin:0 auto;padding:18px 24px 50px}
+.stage-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:14px}
+.stage-head h2{margin:0 0 3px;font-size:17px;font-weight:650;letter-spacing:-.01em}
+.stage-head p{margin:0;color:var(--muted);font-size:11.5px;max-width:760px}
+.stage-legend{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--faint);white-space:nowrap}
+.stage-body{display:flex;align-items:flex-start;justify-content:center;gap:26px}
+
+/* 手机外壳 */
+.device-wrap{flex:0 0 auto;transition:width .18s ease}
+.phone{
+  width:390px;height:844px;padding:10px;border-radius:46px;position:relative;
+  background:linear-gradient(160deg,#2a323d,#11161d 40%,#1b222b);
+  border:1px solid var(--line-strong);
+  box-shadow:0 40px 100px rgba(0,0,0,.55),inset 0 0 0 1px rgba(255,255,255,.05);
+  transition:width .2s ease,height .2s ease;
+}
+body.light .phone{background:linear-gradient(160deg,#f6f8fb,#dde3ec 40%,#e9edf4);box-shadow:0 32px 80px rgba(40,54,76,.22),inset 0 0 0 1px rgba(255,255,255,.7)}
+.phone::after{
+  content:"";position:absolute;top:50%;left:-2px;width:3px;height:64px;border-radius:2px;
+  transform:translateY(-50%);background:var(--line-strong);opacity:.6;
+}
+.screen{
+  width:100%;height:100%;border-radius:38px;overflow:hidden;position:relative;
+  background:var(--panel);display:flex;flex-direction:column;
+  transition:border-radius .2s ease;
+}
+.statusbar{
+  height:30px;flex:0 0 30px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 20px;font-size:10.5px;color:var(--muted);background:var(--panel);position:relative;z-index:5;
+}
+.statusbar .sb-right{display:flex;align-items:center;gap:6px}
+.statusbar .ic{width:12px;height:12px}
+.battery{width:18px;height:9px;border:1px solid var(--muted);border-radius:2.5px;position:relative;display:inline-block}
+.battery::after{content:"";position:absolute;right:-3px;top:2px;width:2px;height:5px;background:var(--muted);border-radius:0 1px 1px 0}
+.battery i{position:absolute;left:1px;top:1px;bottom:1px;width:11px;background:var(--muted);border-radius:1px;display:block}
+
+/* 应用区 */
+.app{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;background:var(--panel)}
+.page-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 16px 14px;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent;scroll-behavior:auto}
+.page-scroll::-webkit-scrollbar{width:4px}
+.page-scroll::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:2px}
+.page{display:none;animation:fadeUp .18s ease-out}
+.page.active{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* 页面头部 */
+.p-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px 2px 12px}
+.p-head h1{margin:0;font-size:19px;font-weight:650;letter-spacing:-.02em;line-height:1.25}
+.p-head p{margin:3px 0 0;font-size:11.5px;color:var(--muted);max-width:270px}
+.p-head .head-ic{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent-strong);flex:0 0 auto}
+.p-head .head-ic .ic{width:18px;height:18px}
+
+/* 底部导航 */
+.tabbar{
+  flex:0 0 60px;height:60px;display:grid;grid-template-columns:repeat(4,1fr);
+  background:var(--panel-2);border-top:1px solid var(--line);position:relative;z-index:6;
+}
+.tab{
+  border:0;background:transparent;color:var(--faint);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:3px;font-size:10px;position:relative;
+  transition:color .16s ease;
+}
+.tab .ic{width:20px;height:20px;transition:transform .16s ease}
+.tab:hover{color:var(--muted)}
+.tab.active{color:var(--accent-strong)}
+.tab.active .ic{transform:translateY(-1px)}
+.tab .tab-badge{
+  position:absolute;top:8px;left:calc(50% + 6px);min-width:15px;height:15px;padding:0 4px;border-radius:8px;
+  background:var(--danger);color:#fff;font-size:9px;line-height:15px;font-weight:650;
+  border:2px solid var(--panel-2);
+}
+.tab .tab-badge.zero{display:none}
+.home-bar{height:16px;flex:0 0 16px;display:grid;place-items:center;background:var(--panel-2)}
+.home-bar i{width:108px;height:4px;border-radius:2px;background:var(--line-strong)}
+
+/* 通用组件 */
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--card-shadow);padding:13px 13px 12px;margin-bottom:11px}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+.card-head h3{margin:0;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px}
+.card-head h3 .ic{width:14px;height:14px;color:var(--muted)}
+.card-desc{margin:0 0 10px;font-size:11px;color:var(--muted);line-height:1.6}
+.badge{display:inline-flex;align-items:center;gap:3px;height:18px;padding:0 6px;border-radius:5px;font-size:9.5px;font-weight:500;white-space:nowrap;border:1px solid transparent}
+.badge .ic{width:10px;height:10px}
+.badge.ok{background:var(--ok-soft);border-color:var(--ok-border);color:var(--ok)}
+.badge.accent{background:var(--accent-soft);border-color:rgba(77,141,255,.3);color:var(--accent-strong)}
+.badge.warn{background:var(--warn-soft);border-color:var(--warn-border);color:var(--warn)}
+.badge.danger{background:var(--danger-soft);border-color:var(--danger-border);color:var(--danger)}
+.badge.plain{background:var(--panel-3);border-color:var(--line);color:var(--muted)}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.dot.ok{background:var(--ok)}
+.dot.warn{background:var(--warn)}
+.dot.danger{background:var(--danger)}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:5px;height:32px;padding:0 12px;
+  border:1px solid var(--line-strong);border-radius:9px;background:var(--panel-3);color:var(--text);
+  font-size:12px;white-space:nowrap;transition:background .15s,border-color .15s,color .15s;
+}
+.btn:hover{background:var(--hover)}
+.btn .ic{width:14px;height:14px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.ghost{background:transparent}
+.btn.danger{background:var(--danger-soft);border-color:var(--danger-border);color:var(--danger)}
+.btn.small{height:27px;font-size:11px;padding:0 9px;border-radius:8px}
+.btn.wide{width:100%;height:40px;font-size:13px;border-radius:11px}
+.btn.link{height:auto;padding:0;border:0;background:transparent;color:var(--accent-strong);font-size:11px;gap:2px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.icon-btn{width:26px;height:26px;display:grid;place-items:center;border:0;background:transparent;color:var(--faint);border-radius:7px}
+.icon-btn:hover{background:var(--hover);color:var(--text)}
+.field{margin-bottom:10px}
+.field label{display:block;font-size:10.5px;color:var(--muted);margin-bottom:5px;letter-spacing:.02em}
+.field .input-wrap{position:relative}
+.field input{
+  width:100%;height:42px;padding:0 12px;border:1px solid var(--line-strong);border-radius:10px;
+  background:var(--input-bg);color:var(--text);font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s;
+}
+.field input::placeholder{color:var(--faint)}
+.field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.field .input-note{margin-top:4px;font-size:10px;color:var(--faint)}
+.form-error{min-height:15px;font-size:10.5px;color:var(--danger);margin:-2px 0 6px}
+.form-note{margin:8px 0 0;font-size:10px;color:var(--faint);line-height:1.55}
+.hint-line{margin-top:10px;padding-top:9px;border-top:1px dashed var(--line);font-size:10px;color:var(--faint);line-height:1.6}
+.err{display:inline-flex;align-items:center;gap:5px;margin-top:8px;padding:5px 8px;border-radius:7px;background:var(--danger-soft);border:1px solid var(--danger-border);color:var(--danger);font-size:10.5px;line-height:1.45}
+.err .ic{width:12px;height:12px}
+.kv{display:grid;gap:0}
+.kv-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:11.5px}
+.kv-row:last-child{border-bottom:0;padding-bottom:0}
+.kv-row>span{color:var(--muted);flex:0 0 auto}
+.kv-row>b{font-weight:500;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spinner{width:13px;height:13px;border-radius:50%;border:2px solid var(--line-strong);border-top-color:var(--accent);display:inline-block;animation:spin .8s linear infinite;flex:0 0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-note{display:flex;align-items:center;justify-content:center;gap:7px;padding:26px 0 14px;font-size:11.5px;color:var(--muted)}
+.sk{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:9px}
+.sk .row{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.sk .sq{width:32px;height:32px;border-radius:9px;background:var(--line);flex:0 0 auto}
+.sk .bar{height:8px;border-radius:4px;background:var(--line);margin-bottom:6px}
+.sk .bar:last-child{margin-bottom:0}
+.sk .bar.short{height:6px;background:var(--line-strong);opacity:.55}
+.w40{width:40%}.w60{width:60%}.w80{width:80%}
+.empty{text-align:center;padding:26px 16px 22px;border:1px dashed var(--line-strong);border-radius:14px;background:var(--panel-2)}
+.empty svg{margin-bottom:10px;opacity:.9}
+.empty h3{margin:0 0 5px;font-size:13px;font-weight:600}
+.empty p{margin:0 auto;max-width:280px;font-size:11px;color:var(--muted);line-height:1.6}
+.empty .actions{display:flex;justify-content:center;gap:8px;margin-top:12px;flex-wrap:wrap}
+
+.auth-gate{border:1px dashed var(--line-strong);border-radius:14px;background:var(--panel-2);padding:22px 15px;text-align:center;margin-bottom:11px}
+.auth-gate .gate-ic{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;margin:0 auto 9px;background:var(--accent-soft);color:var(--accent-strong)}
+.auth-gate .gate-ic .ic{width:19px;height:19px}
+.auth-gate h3{margin:0 0 4px;font-size:13px;font-weight:600}
+.auth-gate p{margin:0 auto 11px;max-width:280px;font-size:10.5px;color:var(--muted);line-height:1.6}
+.auth-gate .actions{display:flex;justify-content:center;gap:7px}
+
+/* 演示面板 */
+.side-panel{flex:0 0 286px;display:grid;gap:12px;position:sticky;top:76px}
+.panel-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 13px;box-shadow:var(--card-shadow)}
+.panel-card h4{margin:0 0 4px;font-size:11px;letter-spacing:.1em;color:var(--faint);font-weight:600}
+.panel-card p{margin:0 0 9px;font-size:11px;color:var(--muted);line-height:1.6}
+.panel-card .row{display:flex;flex-wrap:wrap;gap:5px}
+.chip{height:24px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel-2);color:var(--muted);font-size:10.5px}
+.chip:hover{color:var(--text);border-color:var(--line-strong)}
+.chip.active{background:var(--accent-soft);border-color:rgba(77,141,255,.4);color:var(--accent-strong)}
+.panel-list{display:grid;gap:5px;font-size:10.5px;color:var(--faint)}
+.panel-list b{color:var(--muted);font-weight:500}
+.cmd-note{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);font-family:var(--mono);font-size:9.5px;color:var(--faint);line-height:1.7;word-break:break-all}
+
+/* 连接页 */
+.hero-card{
+  position:relative;overflow:hidden;border-radius:16px;padding:15px 15px 14px;margin-bottom:11px;
+  background:linear-gradient(150deg,rgba(77,141,255,.2),rgba(77,141,255,.05) 60%,transparent),var(--card);
+  border:1px solid rgba(77,141,255,.26);box-shadow:var(--card-shadow);
+}
+.hero-card::after{
+  content:"";position:absolute;right:-26px;top:-30px;width:130px;height:130px;border-radius:50%;
+  background:radial-gradient(circle,rgba(77,141,255,.22),transparent 65%);pointer-events:none;
+}
+.hero-card h2{margin:0 0 4px;font-size:16px;font-weight:650;letter-spacing:-.01em}
+.hero-card p{margin:0;font-size:11px;color:var(--muted);line-height:1.6;max-width:270px}
+.hero-tags{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+.trusted-row{display:flex;align-items:center;gap:9px;padding:9px 0;border-bottom:1px solid var(--line)}
+.trusted-row:last-of-type{border-bottom:0;padding-bottom:2px}
+.trusted-row .platform{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--panel-3);color:var(--muted);flex:0 0 auto}
+.trusted-row .platform .ic{width:17px;height:17px}
+.trusted-main{min-width:0;flex:1}
+.trusted-main b{display:block;font-size:12px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trusted-main span{display:block;font-size:10px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trusted-row .btn{flex:0 0 auto}
+.field-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.field-grid .field{margin-bottom:8px}
+.code-row{display:flex;gap:7px}
+.code-row .field{flex:1;margin-bottom:0}
+.code-row .btn{flex:0 0 74px;height:42px;border-radius:10px}
+.recent-row{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--line)}
+.recent-row:last-child{border-bottom:0;padding-bottom:2px}
+.recent-row .platform{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--panel-3);color:var(--muted);flex:0 0 auto}
+.recent-row .platform .ic{width:15px;height:15px}
+.recent-main{flex:1;min-width:0}
+.recent-main b{display:block;font-size:11.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recent-main span{display:block;font-size:9.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.progress-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:11px}
+.progress-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.progress-head .spinner{width:15px;height:15px}
+.progress-head b{font-size:12.5px;font-weight:600}
+.progress-head .tiny{margin-left:auto}
+.progress-track{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-bottom:11px}
+.progress-track i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),#7fb0ff);border-radius:3px;transition:width .35s ease}
+.steps{display:grid;gap:7px;margin-bottom:11px}
+.step{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--faint)}
+.step .dot{width:5px;height:5px}
+.step.done{color:var(--muted)}
+.step.active{color:var(--text)}
+.step.active .dot{width:7px;height:7px;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.step.done .dot{background:var(--ok)}
+
+/* 设备页 */
+.group-head{display:flex;align-items:center;gap:7px;padding:4px 2px 7px;font-size:10px;color:var(--faint);letter-spacing:.06em}
+.group-head b{color:var(--muted);font-weight:600;font-size:10.5px;letter-spacing:0}
+.group-head .line{flex:1;height:1px;background:var(--line)}
+.dev-card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px;margin-bottom:8px;box-shadow:var(--card-shadow)}
+.dev-card.offline{opacity:.72}
+.dev-top{display:flex;align-items:center;gap:9px}
+.dev-top .platform{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--panel-3);color:var(--muted);position:relative;flex:0 0 auto}
+.dev-top .platform .ic{width:17px;height:17px}
+.dev-top .platform .dot{position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border:2px solid var(--card)}
+.dev-name{flex:1;min-width:0}
+.dev-name b{display:block;font-size:12px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dev-name span{display:block;font-size:9.5px;color:var(--faint);font-family:var(--mono);letter-spacing:.02em}
+.dev-badges{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0 0 43px}
+.dev-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}
+.dev-meta .tiny{display:inline-flex;align-items:center;gap:4px;min-width:0}
+.dev-meta .tiny .ic{width:11px;height:11px}
+.toolbar{display:flex;align-items:center;gap:7px;margin-bottom:9px}
+.chips{display:flex;gap:4px;flex:1}
+.chip-btn{height:25px;padding:0 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);color:var(--muted);font-size:10.5px}
+.chip-btn.active{background:var(--accent-soft);border-color:rgba(77,141,255,.4);color:var(--accent-strong)}
+.search{position:relative;flex:0 0 104px}
+.search .ic{position:absolute;left:7px;top:50%;transform:translateY(-50%);width:12px;height:12px;color:var(--faint)}
+.search input{width:100%;height:25px;padding:0 7px 0 23px;border:1px solid var(--line);border-radius:7px;background:var(--input-bg);font-size:10.5px;outline:none}
+
+/* 消息页 */
+.msg-summary{display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);font-size:10.5px;color:var(--muted);margin-bottom:10px}
+.msg-summary b{color:var(--text);font-weight:600}
+.msg-summary .sep{color:var(--faint)}
+.msg-summary .grow{flex:1}
+.day-head{display:flex;align-items:center;gap:7px;margin:12px 0 7px;font-size:9.5px;color:var(--faint);letter-spacing:.08em}
+.day-head .line{flex:1;height:1px;background:var(--line)}
+.msg-item{display:flex;gap:9px;padding:9px 10px;border-radius:11px;border:1px solid transparent;margin-bottom:4px;position:relative}
+.msg-item.unread{background:var(--accent-soft);border-color:rgba(77,141,255,.18)}
+.msg-item .msg-icon{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;background:var(--panel-3);color:var(--muted);flex:0 0 auto}
+.msg-item .msg-icon .ic{width:14px;height:14px}
+.msg-item .msg-icon.session{background:var(--accent-soft);color:var(--accent-strong)}
+.msg-item .msg-icon.binding{background:var(--ok-soft);color:var(--ok)}
+.msg-item .msg-icon.approval{background:var(--warn-soft);color:var(--warn)}
+.msg-item .msg-icon.grant{background:var(--ok-soft);color:var(--ok)}
+.msg-item .msg-body{flex:1;min-width:0}
+.msg-title{display:flex;align-items:center;gap:6px}
+.msg-title b{font-size:11.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg-title .badge{margin-left:auto;flex:0 0 auto}
+.msg-desc{margin:2px 0 0;font-size:10px;color:var(--muted);line-height:1.55}
+.msg-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:0 0 auto}
+.msg-side time{font-size:9.5px;color:var(--faint)}
+.unread-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+
+/* 我的 */
+.profile-card{position:relative;overflow:hidden;background:linear-gradient(145deg,rgba(77,141,255,.14),transparent 55%),var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:11px}
+.profile-top{display:flex;align-items:center;gap:10px}
+.avatar-lg{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent-strong);font-size:19px;font-weight:650;flex:0 0 auto}
+.profile-id{flex:1;min-width:0}
+.profile-id b{display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile-id span{display:block;font-size:10px;color:var(--faint);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile-id .badge{margin-top:5px;display:inline-flex;width:auto;font-family:inherit;font-size:9.5px;letter-spacing:0;color:var(--ok)}
+.profile-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+.profile-stats div{text-align:center}
+.profile-stats b{display:block;font-size:15px;font-weight:650;letter-spacing:-.02em}
+.profile-stats span{display:block;font-size:9.5px;color:var(--faint)}
+.list-card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:11px;box-shadow:var(--card-shadow)}
+.list-row{display:flex;align-items:center;gap:9px;width:100%;padding:11px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left;font-size:11.5px}
+.list-row:last-child{border-bottom:0}
+.list-row .ic{width:15px;height:15px;color:var(--muted)}
+.list-row .list-main{flex:1;min-width:0}
+.list-row .list-main b{display:block;font-size:11.5px;font-weight:500}
+.list-row .list-main span{display:block;font-size:9.5px;color:var(--faint)}
+.list-row .chev{width:13px;height:13px;color:var(--faint)}
+.list-row.danger{color:var(--danger)}
+.list-row.danger .ic{color:var(--danger)}
+.auth-intro{margin:22px 2px 14px;text-align:center}
+.auth-intro h2{margin:0 0 5px;font-size:17px;font-weight:650;letter-spacing:-.01em}
+.auth-intro p{margin:0 auto;max-width:280px;font-size:11px;color:var(--muted);line-height:1.6}
+.auth-tabs{display:flex;gap:3px;padding:3px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;margin-bottom:12px}
+.auth-tabs button{flex:1;height:28px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11.5px}
+.auth-tabs button.active{background:var(--panel-3);color:var(--text);box-shadow:var(--card-shadow)}
+.auth-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px;box-shadow:var(--card-shadow)}
+
+/* 会话层 */
+.session-layer{
+  position:absolute;inset:0;z-index:20;display:none;flex-direction:column;background:#05070a;
+}
+.session-layer.open{display:flex;animation:sessionIn .2s ease-out}
+body.light .session-layer{background:#0c1016}
+@keyframes sessionIn{from{opacity:0}to{opacity:1}}
+.s-top{display:flex;align-items:center;gap:8px;padding:7px 12px;background:rgba(8,11,16,.86);border-bottom:1px solid rgba(255,255,255,.07);flex:0 0 auto;position:relative;z-index:3}
+body.light .s-top{border-bottom-color:rgba(255,255,255,.1)}
+.s-top .icon-btn{color:var(--on-media)}
+.s-top .icon-btn:hover{background:rgba(255,255,255,.09);color:#fff}
+.s-title{flex:1;min-width:0;text-align:center}
+.s-title b{display:block;font-size:11.5px;color:#e7edf6;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-title span{display:flex;align-items:center;justify-content:center;gap:4px;font-size:9px;color:#8b98aa}
+.s-quality{flex:0 0 auto;display:flex;gap:4px}
+.s-quality .badge{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.14);color:var(--on-media)}
+.s-stage{
+  flex:1;min-height:0;position:relative;overflow:hidden;
+  background:#05080d;
+}
+.s-frame{position:absolute;inset:10px;border:1px solid rgba(255,255,255,.12);border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;color:#5e6b7d}
+.s-frame .ic{width:34px;height:34px;opacity:.55}
+.s-frame b{font-size:11px;font-weight:500;color:#8b98aa;letter-spacing:.04em}
+.s-frame span{font-size:9.5px;color:#5e6b7d}
+.s-watermark{position:absolute;right:12px;bottom:10px;font-family:var(--mono);font-size:8.5px;color:rgba(255,255,255,.22);letter-spacing:.06em}
+.s-overlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(280px,82%);background:rgba(13,17,24,.94);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:15px;text-align:center;box-shadow:0 18px 50px rgba(0,0,0,.55);display:none;z-index:4}
+.s-overlay.open{display:block;animation:pop .16s ease-out}
+@keyframes pop{from{opacity:0;transform:translate(-50%,-50%) scale(.96)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+.s-overlay .spin-wrap{display:grid;place-items:center;margin-bottom:9px}
+.s-overlay .spinner{width:22px;height:22px;border-width:2.5px}
+.s-overlay h3{margin:0 0 4px;font-size:13px;color:#e7edf6;font-weight:600}
+.s-overlay p{margin:0 0 10px;font-size:10.5px;color:#8b98aa;line-height:1.6}
+.s-overlay .err{justify-content:center;width:100%;background:rgba(234,106,106,.12);border-color:rgba(234,106,106,.32);color:#ea6a6a}
+.s-overlay .actions{display:flex;gap:7px;margin-top:10px}
+.s-overlay .actions .btn{flex:1;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.16);color:#e7edf6}
+.s-overlay .actions .btn.primary{background:#4d8dff;border-color:#4d8dff;color:#fff}
+.s-ctrl{
+  flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:9px 14px;
+  background:rgba(8,11,16,.9);border-top:1px solid rgba(255,255,255,.07);position:relative;z-index:3;
+}
+.s-ctrl button{
+  height:46px;border:1px solid rgba(255,255,255,.1);border-radius:11px;background:rgba(255,255,255,.05);
+  color:var(--on-media);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:9px;
+}
+.s-ctrl button:hover{background:rgba(255,255,255,.1);color:#fff}
+.s-ctrl .ic{width:16px;height:16px}
+.s-ctrl button.danger{color:#ea6a6a;border-color:rgba(234,106,106,.28);background:rgba(234,106,106,.08)}
+.phone.in-session .tabbar,
+.phone.in-session .home-bar{visibility:hidden}
+
+/* 底部弹层 */
+.sheet-scrim{position:absolute;inset:0;z-index:30;background:rgba(0,0,0,.55);display:none;align-items:flex-end}
+.sheet-scrim.open{display:flex}
+.sheet{
+  width:100%;background:var(--panel);border:1px solid var(--line);border-bottom:0;border-radius:18px 18px 0 0;
+  padding:14px 15px 18px;animation:sheetUp .2s ease-out;
+}
+@keyframes sheetUp{from{transform:translateY(24px);opacity:.6}to{transform:none;opacity:1}}
+.sheet-grab{width:34px;height:4px;border-radius:2px;background:var(--line-strong);margin:0 auto 11px}
+.sheet h3{margin:0 0 3px;font-size:13.5px;font-weight:600}
+.sheet .sheet-desc{margin:0 0 11px;font-size:10.5px;color:var(--muted);line-height:1.6}
+.sheet .actions{display:flex;gap:8px;margin-top:12px}
+.sheet .actions .btn{flex:1;height:38px}
+.sheet .warn-line{padding:7px 9px;border-radius:8px;background:var(--warn-soft);border:1px solid var(--warn-border);color:var(--warn);font-size:10px;line-height:1.55;margin-bottom:4px}
+
+/* 轻提示 */
+.toast{
+  position:absolute;left:50%;bottom:76px;transform:translate(-50%,8px);z-index:40;
+  padding:8px 13px;border-radius:9px;background:rgba(20,26,35,.96);border:1px solid var(--line-strong);
+  color:var(--text);font-size:11px;white-space:nowrap;max-width:86%;overflow:hidden;text-overflow:ellipsis;
+  opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;box-shadow:0 10px 30px rgba(0,0,0,.4);
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* 复制按钮与右键 / 长按菜单 */
+.copy-btn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--faint);flex:0 0 auto}
+.copy-btn:hover{background:var(--hover);color:var(--accent-strong)}
+.copy-btn .ic{width:12px;height:12px}
+.copy-btn:disabled{opacity:.35;cursor:not-allowed}
+.input-with-copy{position:relative}
+.input-with-copy input{padding-right:34px}
+.input-with-copy .copy-btn{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:26px;height:26px}
+.id-line{display:flex;align-items:center;gap:4px;min-width:0}
+.id-line .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fail-row{display:flex;align-items:center;justify-content:center;gap:2px;margin-top:2px;flex-wrap:wrap}
+.fail-row .fail-reason{margin:0;max-width:none}
+.ctx-menu{position:fixed;z-index:95;min-width:178px;padding:5px;background:var(--panel-3);border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 18px 44px rgba(0,0,0,.5);display:none}
+.ctx-menu.open{display:block;animation:pop .12s ease-out}
+.ctx-item{width:100%;display:flex;align-items:center;gap:8px;height:32px;padding:0 9px;border:0;border-radius:6px;background:transparent;color:var(--text);font-size:11.5px;text-align:left}
+.ctx-item:hover:not(:disabled){background:var(--accent-soft);color:var(--accent-strong)}
+.ctx-item:disabled{opacity:.4;cursor:not-allowed}
+.ctx-item .ic{width:13px;height:13px;color:var(--muted)}
+.ctx-item.danger{color:var(--danger)}
+.ctx-item.danger .ic{color:var(--danger)}
+.ctx-item .hint{margin-left:auto;font-size:9.5px;color:var(--faint)}
+.ctx-item .ctx-check{margin-left:auto;display:inline-flex;color:var(--accent-strong)}
+.ctx-item .ctx-check .ic{width:12px;height:12px;color:var(--accent-strong)}
+.ctx-sep{height:1px;margin:4px 6px;background:var(--line)}
+.xfer-row{display:flex;align-items:center;gap:9px;padding:8px 9px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);margin-bottom:6px}
+.xfer-row:last-child{margin-bottom:0}
+.xfer-ic{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--panel-3);color:var(--muted);flex:0 0 auto}
+.xfer-ic .ic{width:14px;height:14px}
+.xfer-main{flex:1;min-width:0}
+.xfer-main b{display:block;font-size:11px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xfer-main .xfer-bar{height:3px;border-radius:2px;background:var(--line);overflow:hidden;margin:4px 0 3px}
+.xfer-main .xfer-bar i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.xfer-main span{display:block;font-size:9.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xfer-state{font-size:9.5px;color:var(--muted);flex:0 0 auto}
+.xfer-state.bad{color:var(--danger)}
+.phone.immersive .statusbar{display:none}
+
+/* 沉浸会话：默认适应屏幕，最大 4 倍相对放大并平移 */
+.session-layer .s-top{position:absolute;top:0;left:0;right:0;z-index:6;height:48px;border-bottom:0;background:linear-gradient(180deg,rgba(5,7,10,.92),rgba(5,7,10,.5) 72%,transparent)}
+.session-layer .s-stage{position:absolute;inset:0;border-radius:0;touch-action:none}
+.s-canvas{position:absolute;overflow:hidden}
+.s-canvas .s-frame{inset:0;border:0;border-radius:0;background:
+  radial-gradient(circle at 0% 0%,rgba(77,141,255,.22),transparent 42%),
+  radial-gradient(circle at 100% 0%,rgba(224,169,85,.18),transparent 42%),
+  radial-gradient(circle at 0% 100%,rgba(63,201,150,.18),transparent 42%),
+  radial-gradient(circle at 100% 100%,rgba(234,106,106,.16),transparent 42%),
+  linear-gradient(rgba(255,255,255,.06) 1px,transparent 1px) 0 0/240px 240px,
+  linear-gradient(90deg,rgba(255,255,255,.06) 1px,transparent 1px) 0 0/240px 240px,
+  #121820}
+.frame-grid{position:absolute;inset:0;width:100%;height:100%}
+.frame-tag{position:absolute;font-size:38px;line-height:1;color:rgba(255,255,255,.18);letter-spacing:3px;font-weight:600}
+.frame-tag.tl{left:48px;top:44px}
+.frame-tag.tr{right:48px;top:44px}
+.frame-tag.bl{left:48px;bottom:44px}
+.frame-tag.br{right:48px;bottom:44px}
+.session-layer .s-ctrl{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);width:auto;grid-template-columns:repeat(5,58px);padding:5px;border-radius:13px;border:1px solid rgba(255,255,255,.12);background:rgba(10,14,20,.86);backdrop-filter:blur(8px);z-index:6}
+.session-layer .s-top,.session-layer .s-ctrl{opacity:0;pointer-events:none;transition:opacity .24s ease}
+.session-layer.float-on .s-top,.session-layer.float-on .s-ctrl{opacity:1;pointer-events:auto}
+.s-pan-row{grid-column:1/-1;display:flex;align-items:center;gap:6px;margin-top:4px}
+.s-pan-row .zoom-label{flex:0 0 auto;height:26px;padding:0 8px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:var(--on-media);font-size:10.5px;font-variant-numeric:tabular-nums;display:flex;align-items:center}
+.s-pan-row button{flex:1;height:26px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(255,255,255,.08);color:#dbe4ef;font-size:10.5px;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:0;padding:0}
+.s-pan-row button:hover{background:rgba(255,255,255,.14)}
+.tap-mark{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid var(--accent);border-radius:50%;pointer-events:none;z-index:7;animation:pop .18s ease-out}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;transition-duration:.001ms !important}
+}
+@media (max-width:1180px){
+  .stage-body{flex-direction:column;align-items:center}
+  .side-panel{position:static;width:100%;max-width:760px;grid-template-columns:repeat(3,minmax(0,1fr));display:grid}
+}
+
+</style>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-link-2" viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/></symbol>
+  <symbol id="i-connect-pc" viewBox="0 0 24 24"><rect width="18.5" height="11.5" x="2.75" y="4" rx="1.8"/><path d="M12 15.5v3.2"/><path d="M9.2 18.7h5.6"/><path d="M5.75 9.75h12.5"/><path d="m15.25 6.75 3 3-3 3"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></symbol>
+  <symbol id="i-monitor-tab" viewBox="0 0 24 24"><rect width="18.5" height="11.5" x="2.75" y="4" rx="1.8"/><path d="M12 15.5v3.2"/><path d="M9.2 18.7h5.6"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/></symbol>
+  <symbol id="i-smartphone" viewBox="0 0 24 24"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></symbol>
+  <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+  <symbol id="i-user-round" viewBox="0 0 24 24"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></symbol>
+  <symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/></symbol>
+  <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/><path d="M5 12.859a10 10 0 0 1 5.17-2.69"/><path d="M19 12.859a10 10 0 0 0-2.007-1.523"/><path d="M2 8.82a15 15 0 0 1 4.177-2.643"/><path d="M22 8.82a15 15 0 0 0-11.288-3.764"/><path d="m2 2 20 20"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-key-round" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+  <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-monitor-off" viewBox="0 0 24 24"><path d="M12 17v4"/><path d="M17 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 1.184-1.826"/><path d="m2 2 20 20"/><path d="M8 21h8"/><path d="M8.656 3H20a2 2 0 0 1 2 2v10a2 2 0 0 1-.293 1.042"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-log-in" viewBox="0 0 24 24"><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol>
+  <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></symbol>
+  <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m2 2 20 20"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4.586-4.586a2 2 0 0 0-2.828 0L5 19"/></symbol>
+  <symbol id="i-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-minimize" viewBox="0 0 24 24"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 3l14 9-14 9z"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-4.5A2 2 0 0 1 9.4 8H21l-2.1 6.5a2 2 0 0 1-1.9 1.4H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h7"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+</svg>
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">R</div>
+    <div><strong>RDC 远程桌面</strong><span>安卓端 · 仅控制端</span></div>
+  </div>
+  <span class="topbar-tag">安卓控制端界面原型 v2 · 现行基准</span>
+  <div class="topbar-right">
+    <span class="seg-label">主题</span>
+    <div class="seg" id="themeSeg">
+      <button data-theme="dark" class="active">深色</button>
+      <button data-theme="light">浅色</button>
+    </div>
+    <span class="seg-label">登录态</span>
+    <div class="seg" id="authSeg">
+      <button data-auth="in" class="active">已登录</button>
+      <button data-auth="out">未登录</button>
+    </div>
+    <button class="btn small ghost" id="resetBtn">重置演示</button>
+  </div>
+</header>
+
+<main class="stage">
+  <div class="stage-head">
+    <div>
+      <h2>安卓端 · 登录后界面（v2 现行基准）</h2>
+      <p>底部导航固定四格；进入会话全屏并隐藏导航，退出回到进入前的标签页；应用外壳固定竖屏，不随手机旋转。仅控制端，不含被控端与屏幕墙。</p>
+    </div>
+    <div class="stage-legend"><span class="dot ok"></span>可点击<span class="dot" style="margin-left:8px"></span>演示状态</div>
+  </div>
+  <div class="stage-body">
+    <section class="device-wrap">
+      <div class="phone" id="phone">
+        <div class="screen">
+          <div class="statusbar">
+            <span>9:41</span>
+            <span class="sb-right">
+              <svg class="ic"><use href="#i-wifi"/></svg>
+              <span class="battery"><i></i></span>
+            </span>
+          </div>
+          <div class="app">
+            <div class="page-scroll" id="pageScroll">
+
+              <!-- ============ 连接 ============ -->
+              <section class="page active" data-page="connect">
+                <div class="p-head">
+                  <div><h1>连接</h1><p>输入设备码与连接码，或从受信设备直接发起。</p></div>
+                  <div class="head-ic"><svg class="ic"><use href="#i-link-2"/></svg></div>
+                </div>
+
+                <div id="connectProgress" class="progress-card hidden">
+                  <div class="progress-head">
+                    <span class="spinner"></span>
+                    <b id="connectProgressTitle">正在连接…</b>
+                    <span class="tiny" id="connectProgressStep">1/4</span>
+                  </div>
+                  <div class="progress-track"><i id="connectProgressBar" style="width:8%"></i></div>
+                  <div class="steps" id="connectSteps">
+                    <div class="step active"><span class="dot"></span><span>校验设备码与连接码</span></div>
+                    <div class="step"><span class="dot"></span><span>建立加密通道</span></div>
+                    <div class="step"><span class="dot"></span><span>协商传输与画质</span></div>
+                    <div class="step"><span class="dot"></span><span>等待远端画面</span></div>
+                  </div>
+                  <button class="btn small" id="cancelConnect">取消连接</button>
+                  <div class="cmd-note">进度来源：get_connection_progress(task_id) 的 completed、total、status、message</div>
+                </div>
+
+                <div class="hero-card">
+                  <h2>远程协助，从手机发起</h2>
+                  <p>安卓端只做控制端：连接你已登录的桌面设备，不提供被控端与屏幕墙入口。</p>
+                  <div class="hero-tags">
+                    <span class="badge accent">控制端</span>
+                    <span class="badge plain">端到端加密</span>
+                    <span class="badge plain">6 位连接码</span>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3><svg class="ic"><use href="#i-shield-check"/></svg>受信设备</h3>
+                    <button class="btn link" id="trustedRefresh">刷新</button>
+                  </div>
+                  <div class="auth-gate hidden" data-auth-gate="connectTrusted">
+                    <div class="gate-ic"><svg class="ic"><use href="#i-lock"/></svg></div>
+                    <h3>登录后读取受信设备</h3>
+                    <p>未登录仍可使用下方连接码连接；受信设备一键连接需要先登录。</p>
+                    <div class="actions"><button class="btn small primary" data-goto="account">去登录</button></div>
+                  </div>
+                  <div data-state-view="normal" data-state-scope="connect">
+                    <div id="trustedList"></div>
+                    <div class="hint-line">数据来源：<span class="mono">list_devices()</span> 的 items，按 <span class="mono">trusted</span> 与 <span class="mono">online</span> 过滤；受信设备免连接码，未受信设备仍走连接码。</div>
+                  </div>
+                  <div data-state-view="loading" data-state-scope="connect">
+                    <div class="sk" style="margin:10px 0 0">
+                      <div class="row"><div class="sq"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div>
+                      <div class="sk" style="margin:0"><div class="row"><div class="sq"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div></div>
+                    </div>
+                    <div class="loading-note" style="padding:10px 0 0"><span class="spinner"></span>正在读取受信设备…</div>
+                  </div>
+                  <div data-state-view="empty" data-state-scope="connect">
+                    <div class="empty" style="padding:20px 12px 18px">
+                      <svg width="42" height="42" viewBox="0 0 48 48" fill="none"><rect x="7" y="10" width="34" height="22" rx="3" stroke="currentColor" stroke-opacity=".45" stroke-width="1.6"/><path d="M17 38h14M24 32v6" stroke="currentColor" stroke-opacity=".45" stroke-width="1.6" stroke-linecap="round"/><path d="M18 21h12M24 15v12" stroke="currentColor" stroke-opacity=".35" stroke-width="1.6" stroke-linecap="round"/></svg>
+                      <h3>还没有受信设备</h3>
+                      <p>在桌面端设备列表把目标设备设为受信，或直接输入设备码与连接码连接。</p>
+                      <div class="actions"><button class="btn small" id="emptyRefresh">重新读取</button></div>
+                    </div>
+                  </div>
+                  <div data-state-view="failed" data-state-scope="connect">
+                    <div class="empty" style="padding:20px 12px 18px">
+                      <svg width="42" height="42" viewBox="0 0 48 48" fill="none"><path d="M24 8 44 40H4L24 8Z" stroke="currentColor" stroke-opacity=".4" stroke-width="1.6" stroke-linejoin="round"/><path d="M24 19v9M24 33h.01" stroke="currentColor" stroke-opacity=".55" stroke-width="1.8" stroke-linecap="round"/></svg>
+                      <h3>受信设备读取失败</h3>
+                      <div class="fail-row"><p class="fail-reason">网络不通，请检查手机网络后重试。</p><button class="copy-btn" data-copy-reason title="复制错误原因"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+                      <div class="actions"><button class="btn small" data-retry="connect">重试</button><button class="btn small ghost" data-goto="account">去登录</button></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card-head"><h3><svg class="ic"><use href="#i-key-round"/></svg>连接码连接</h3><span class="tiny">未受信设备</span></div>
+                  <div class="field input-with-copy">
+                    <label for="inDeviceCode">设备码</label>
+                    <input id="inDeviceCode" maxlength="20" autocomplete="off" spellcheck="false" placeholder="20 位设备码，例如 AAAABBBBCCCCDDDDEEEE">
+                    <button class="copy-btn" data-copy-input="inDeviceCode" title="复制设备码">
+                      <svg class="ic"><use href="#i-copy"/></svg>
+                    </button>
+                  </div>
+                  <div class="field input-with-copy">
+                    <label for="inAccessCode">连接码</label>
+                    <input id="inAccessCode" maxlength="6" inputmode="numeric" autocomplete="off" placeholder="6 位数字">
+                    <button class="copy-btn" data-copy-input="inAccessCode" title="复制连接码">
+                      <svg class="ic"><use href="#i-copy"/></svg>
+                    </button>
+                  </div>
+                  <div class="form-error" id="connectError"></div>
+                  <button class="btn primary wide" id="btnConnectByCode">
+                    <svg class="ic"><use href="#i-link-2"/></svg>连接
+                  </button>
+                  <div class="form-note">界面只收集设备码与连接码，调用 <span class="mono">start_connection(device_id, access_code)</span>；不探测设备、不判定准入，结果以命令返回为准。</div>
+                </div>
+
+                <div class="card">
+                  <div class="card-head"><h3><svg class="ic"><use href="#i-clock"/></svg>最近连接</h3><span class="tiny">按 last_connected_at</span></div>
+                  <div id="recentBody">
+                    <div id="recentList"></div>
+                    <div class="hint-line">非受信设备仍走连接码；最近连接时间来自 <span class="mono">list_devices()</span> 的 <span class="mono">last_connected_at</span>，为 <span class="mono">null</span> 时显示「未知」。</div>
+                  </div>
+                  <div class="auth-gate hidden" data-auth-gate="connectRecent" style="margin:2px 0 0">
+                    <div class="gate-ic"><svg class="ic"><use href="#i-clock"/></svg></div>
+                    <h3>登录后查看最近连接</h3>
+                    <p>最近连接来自同账号设备记录，未登录时不展示本机缓存。</p>
+                    <div class="actions"><button class="btn small primary" data-goto="account">去登录</button></div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ============ 设备 ============ -->
+              <section class="page" data-page="devices">
+                <div class="p-head">
+                  <div><h1>设备</h1><p>同账号设备、在线状态与受信标记。</p></div>
+                  <button class="icon-btn" id="openBind" title="绑定新设备" style="width:32px;height:32px">
+                    <svg class="ic" style="width:18px;height:18px"><use href="#i-plus"/></svg>
+                  </button>
+                </div>
+
+                <div class="auth-gate hidden" data-auth-gate="devices" style="margin-top:6px">
+                  <div class="gate-ic"><svg class="ic"><use href="#i-monitor"/></svg></div>
+                  <h3>登录后查看设备</h3>
+                  <p>登录同一账号后，桌面设备会自动出现在这里，并显示在线与受信状态。</p>
+                  <div class="actions"><button class="btn small primary" data-goto="account">去登录</button></div>
+                </div>
+
+                <div data-state-view="normal" data-state-scope="devices">
+                  <div class="toolbar">
+                    <div class="chips" id="devFilter">
+                      <button class="chip-btn active" data-filter="all">全部</button>
+                      <button class="chip-btn" data-filter="online">在线</button>
+                      <button class="chip-btn" data-filter="offline">离线</button>
+                    </div>
+                    <div class="search">
+                      <svg class="ic"><use href="#i-search"/></svg>
+                      <input id="devSearch" placeholder="搜索设备" autocomplete="off">
+                    </div>
+                  </div>
+                  <div id="devList"></div>
+                  <div class="hint-line">数据来源：<span class="mono">list_devices()</span>；本机由 <span class="mono">device_id</span> 与 <span class="mono">get_account_state().device_id</span> 比对；平台图标依赖 <span class="mono">platform</span> 字段（缺口 A2）。</div>
+                </div>
+
+                <div data-state-view="loading" data-state-scope="devices">
+                  <div class="sk"><div class="row"><div class="sq"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div><div class="bar short w80" style="margin-left:43px"></div></div>
+                  <div class="sk"><div class="row"><div class="sq"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div><div class="bar short w80" style="margin-left:43px"></div></div>
+                  <div class="sk"><div class="row"><div class="sq"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div><div class="bar short w80" style="margin-left:43px"></div></div>
+                  <div class="loading-note"><span class="spinner"></span>正在读取设备列表…</div>
+                </div>
+
+                <div data-state-view="empty" data-state-scope="devices">
+                  <div class="empty">
+                    <svg width="52" height="52" viewBox="0 0 56 56" fill="none"><rect x="8" y="12" width="30" height="20" rx="3" stroke="currentColor" stroke-opacity=".4" stroke-width="1.6"/><path d="M18 40h10M23 32v8" stroke="currentColor" stroke-opacity=".4" stroke-width="1.6" stroke-linecap="round"/><rect x="34" y="26" width="14" height="20" rx="2.5" stroke="currentColor" stroke-opacity=".3" stroke-width="1.6"/><path d="M39 40h4" stroke="currentColor" stroke-opacity=".3" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    <h3>这个账号还没有设备</h3>
+                    <p>在桌面端登录同一账号后会自动出现；也可以在桌面端「设备」页复制设备码，回到这里绑定。</p>
+                    <div class="actions"><button class="btn small primary" id="emptyBind">绑定设备</button><button class="btn small ghost" data-goto="connect">用连接码连接</button></div>
+                  </div>
+                </div>
+
+                <div data-state-view="failed" data-state-scope="devices">
+                  <div class="empty">
+                    <svg width="52" height="52" viewBox="0 0 56 56" fill="none"><rect x="8" y="12" width="30" height="22" rx="3" stroke="currentColor" stroke-opacity=".38" stroke-width="1.6"/><path d="M18 42h10M23 34v8" stroke="currentColor" stroke-opacity=".38" stroke-width="1.6" stroke-linecap="round"/><path d="m36 30 12 12M48 30 36 42" stroke="currentColor" stroke-opacity=".45" stroke-width="1.8" stroke-linecap="round"/></svg>
+                    <h3>设备列表加载失败</h3>
+                    <div class="fail-row"><p class="fail-reason">网络不通，请检查手机网络后重试。</p><button class="copy-btn" data-copy-reason title="复制错误原因"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+                    <div class="actions"><button class="btn small" data-retry="devices">重试</button><button class="btn small ghost" data-goto="account">检查登录状态</button></div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ============ 消息 ============ -->
+              <section class="page" data-page="messages">
+                <div class="p-head">
+                  <div><h1>消息</h1><p>会话与审计事件，按时间线倒序。</p></div>
+                  <div class="row" style="gap:4px;align-items:center">
+                    <button class="icon-btn" id="msgCopyAll" title="复制全部消息" style="width:30px;height:30px">
+                      <svg class="ic" style="width:15px;height:15px"><use href="#i-copy"/></svg>
+                    </button>
+                    <button class="icon-btn" id="msgExport" title="导出消息" style="width:30px;height:30px">
+                      <svg class="ic" style="width:15px;height:15px"><use href="#i-download"/></svg>
+                    </button>
+                    <button class="btn link" id="markAllRead">全部已读</button>
+                  </div>
+                </div>
+
+                <div class="auth-gate hidden" data-auth-gate="messages" style="margin-top:6px">
+                  <div class="gate-ic"><svg class="ic"><use href="#i-inbox"/></svg></div>
+                  <h3>登录后查看消息</h3>
+                  <p>会话建立与结束、受信设备连接、信任变更都会记录在消息中心。</p>
+                  <div class="actions"><button class="btn small primary" data-goto="account">去登录</button></div>
+                </div>
+
+                <div data-state-view="normal" data-state-scope="messages">
+                  <div class="msg-summary">
+                    <svg class="ic" style="width:13px;height:13px"><use href="#i-inbox"/></svg>
+                    <span><b id="msgUnread">3</b> 条未读</span>
+                    <span class="sep">·</span>
+                    <span>共 <b id="msgTotal">10</b> 条</span>
+                    <span class="grow"></span>
+                    <span class="tiny" id="msgReadUntil">已读至 11-09 22:10</span>
+                  </div>
+                  <div class="chips" id="msgFilter" style="margin-bottom:6px;overflow-x:auto;padding-bottom:2px">
+                    <button class="chip-btn active" data-filter="all">全部</button>
+                    <button class="chip-btn" data-filter="session">会话</button>
+                    <button class="chip-btn" data-filter="binding">绑定</button>
+                    <button class="chip-btn" data-filter="approval">审批</button>
+                    <button class="chip-btn" data-filter="grant">授权</button>
+                    <button class="chip-btn" data-filter="account">账号</button>
+                  </div>
+                  <div id="msgList"></div>
+                  <div class="hint-line">数据来源：<span class="mono">list_messages()</span> 的 items、unread、total、read_until；未读只取返回的 <span class="mono">unread</span>，不在界面本地推算。</div>
+                </div>
+
+                <div data-state-view="loading" data-state-scope="messages">
+                  <div class="sk"><div class="row"><div class="sq" style="width:28px;height:28px"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w80"></div></div></div></div>
+                  <div class="sk"><div class="row"><div class="sq" style="width:28px;height:28px"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w80"></div></div></div></div>
+                  <div class="sk"><div class="row"><div class="sq" style="width:28px;height:28px"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w80"></div></div></div></div>
+                  <div class="loading-note"><span class="spinner"></span>正在读取消息…</div>
+                </div>
+
+                <div data-state-view="empty" data-state-scope="messages">
+                  <div class="empty">
+                    <svg width="54" height="54" viewBox="0 0 56 56" fill="none"><path d="M8 17h40v26H8z" stroke="currentColor" stroke-opacity=".4" stroke-width="1.6" stroke-linejoin="round"/><path d="m8 18 20 15 20-15" stroke="currentColor" stroke-opacity=".45" stroke-width="1.6" stroke-linejoin="round"/><path d="M21 44h14" stroke="currentColor" stroke-opacity=".3" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    <h3>还没有消息</h3>
+                    <p>会话建立与结束、受信设备连接、信任变更都会记录在这里。</p>
+                    <div class="actions"><button class="btn small" data-retry="messages">刷新</button></div>
+                  </div>
+                </div>
+
+                <div data-state-view="failed" data-state-scope="messages">
+                  <div class="empty">
+                    <svg width="54" height="54" viewBox="0 0 56 56" fill="none"><path d="M8 17h40v26H8z" stroke="currentColor" stroke-opacity=".35" stroke-width="1.6"/><path d="m8 18 20 15 20-15" stroke="currentColor" stroke-opacity=".35" stroke-width="1.6"/><path d="m38 36 10 10M48 36 38 46" stroke="currentColor" stroke-opacity=".5" stroke-width="1.8" stroke-linecap="round"/></svg>
+                    <h3>消息加载失败</h3>
+                    <div class="fail-row"><p class="fail-reason">网络不通，请检查手机网络后重试。</p><button class="copy-btn" data-copy-reason title="复制错误原因"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+                    <div class="actions"><button class="btn small" data-retry="messages">重试</button><button class="btn small ghost" data-goto="account">检查登录状态</button></div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ============ 我的 ============ -->
+              <section class="page" data-page="account">
+                <div class="p-head">
+                  <div><h1>我的</h1><p>账号、设备与登录状态。</p></div>
+                  <div class="head-ic"><svg class="ic"><use href="#i-user-round"/></svg></div>
+                </div>
+
+                <div data-state-view="normal" data-state-scope="mine">
+                  <div id="mineIn">
+                    <div class="profile-card">
+                      <div class="profile-top">
+                        <div class="avatar-lg" id="accountAvatar">w</div>
+                        <div class="profile-id">
+                          <b id="accountName">wuge@example.com</b>
+                          <span id="accountId">acc_8f3c21d4</span>
+                          <span class="badge ok" id="accountBadge">已登录</span>
+                        </div>
+                        <button class="icon-btn" id="copyAccount" title="复制账号标识">
+                          <svg class="ic"><use href="#i-copy"/></svg>
+                        </button>
+                      </div>
+                      <div class="profile-stats">
+                        <div><b id="statBound">4</b><span>已绑定设备</span></div>
+                        <div><b id="statTrusted">2</b><span>受信设备</span></div>
+                        <div><b id="statOnline">3</b><span>在线设备</span></div>
+                      </div>
+                    </div>
+
+                    <div class="list-card">
+                      <button class="list-row" data-goto="devices">
+                        <svg class="ic"><use href="#i-monitor"/></svg>
+                        <span class="list-main"><b>设备与信任</b><span>查看在线设备、受信标记与连接</span></span>
+                        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+                      </button>
+                      <button class="list-row" data-goto="messages">
+                        <svg class="ic"><use href="#i-inbox"/></svg>
+                        <span class="list-main"><b>消息中心</b><span>会话与审计事件时间线</span></span>
+                        <span class="badge accent" id="mineUnread">3 条未读</span>
+                        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+                      </button>
+                      <button class="list-row" id="openSettings">
+                        <svg class="ic"><use href="#i-settings"/></svg>
+                        <span class="list-main"><b>设置</b><span>外观、画质与会话选项</span></span>
+                        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+                      </button>
+                    </div>
+
+                    <div class="list-card">
+                      <button class="list-row" data-goto="account" id="accountDetailRow">
+                        <svg class="ic"><use href="#i-clock"/></svg>
+                        <span class="list-main"><b>登录状态</b><span id="sessionExpireText">已登录 · 会话有效期至 2026-11-10 21:42</span></span>
+                        <span class="badge ok">正常</span>
+                      </button>
+                      <button class="list-row danger" id="logoutRow">
+                        <svg class="ic"><use href="#i-log-out"/></svg>
+                        <span class="list-main"><b>退出登录</b><span>吊销本机令牌并清空本机登录态</span></span>
+                        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+                      </button>
+                    </div>
+
+                    <div class="hint-line">数据来源：<span class="mono">get_account_state()</span> 的 logged_in、account_id、account_name、created_at、device_id、expires_at；数量来自 <span class="mono">list_devices()</span> 与 <span class="mono">list_messages().unread</span>。</div>
+                  </div>
+
+                  <div id="mineOut" class="hidden">
+                    <div class="auth-intro">
+                      <h2>登录账号</h2>
+                      <p>登录后可查看同账号设备、最近消息，并向受信设备发起连接。</p>
+                    </div>
+                    <div class="auth-tabs" id="authTabs">
+                      <button class="active" data-authtab="login">登录</button>
+                      <button data-authtab="register">注册</button>
+                    </div>
+                    <div class="auth-card">
+                      <div class="field">
+                        <label for="authAccount">账号</label>
+                        <input id="authAccount" autocomplete="username" placeholder="邮箱或账号名">
+                      </div>
+                      <div class="field">
+                        <label for="authPassword">口令</label>
+                        <input id="authPassword" type="password" autocomplete="current-password" placeholder="登录口令">
+                      </div>
+                      <div class="field hidden" id="confirmField">
+                        <label for="authConfirm">确认口令</label>
+                        <input id="authConfirm" type="password" autocomplete="new-password" placeholder="再次输入口令">
+                      </div>
+                      <div class="form-error" id="authError"></div>
+                      <button class="btn primary wide" id="authSubmit">
+                        <svg class="ic"><use href="#i-log-in"/></svg><span id="authSubmitText">登录</span>
+                      </button>
+                      <div class="form-note">界面只提交账号与口令，调用 <span class="mono">login_account(account, password)</span> 或 <span class="mono">register_account(account, password)</span>；不参与口令摘要与令牌签发。</div>
+                    </div>
+                    <div class="hint-line">未登录时不展示设备与消息缓存；功能页只保留「去登录」引导。</div>
+                  </div>
+                </div>
+
+                <div data-state-view="loading" data-state-scope="mine">
+                  <div class="sk" style="padding:16px"><div class="row"><div class="sq" style="width:46px;height:46px;border-radius:14px"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div><div class="bar short w80"></div></div>
+                  <div class="sk"><div class="row"><div class="sq"></div><div style="flex:1"><div class="bar w60"></div><div class="bar short w40"></div></div></div></div>
+                  <div class="loading-note"><span class="spinner"></span>正在读取登录状态…</div>
+                </div>
+
+                <div data-state-view="empty" data-state-scope="mine">
+                  <div class="empty" style="margin-top:16px">
+                    <svg width="54" height="54" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="21" r="9" stroke="currentColor" stroke-opacity=".42" stroke-width="1.6"/><path d="M10 47a18 18 0 0 1 36 0" stroke="currentColor" stroke-opacity=".42" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    <h3>尚未登录</h3>
+                    <p>登录后可查看同账号设备、消息与受信设备一键连接。</p>
+                    <div class="actions"><button class="btn small primary" id="emptyLogin">去登录</button></div>
+                  </div>
+                </div>
+
+                <div data-state-view="failed" data-state-scope="mine">
+                  <div class="empty" style="margin-top:16px">
+                    <svg width="54" height="54" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="21" r="9" stroke="currentColor" stroke-opacity=".35" stroke-width="1.6"/><path d="M10 47a18 18 0 0 1 36 0" stroke="currentColor" stroke-opacity=".35" stroke-width="1.6"/><path d="m40 36 10 10M50 36 40 46" stroke="currentColor" stroke-opacity=".5" stroke-width="1.8" stroke-linecap="round"/></svg>
+                    <h3>登录状态读取失败</h3>
+                    <div class="fail-row"><p class="fail-reason">认证失败，请重新登录。</p><button class="copy-btn" data-copy-reason title="复制错误原因"><svg class="ic"><use href="#i-copy"/></svg></button></div>
+                    <div class="actions"><button class="btn small" data-retry="mine">重试</button><button class="btn small ghost" id="failedRelogin">重新登录</button></div>
+                  </div>
+                </div>
+              </section>
+
+
+            </div>
+            <nav class="tabbar" id="tabbar">
+              <button class="tab active" data-tab="connect">
+                <svg class="ic"><use href="#i-connect-pc"/></svg><span>连接</span>
+              </button>
+              <button class="tab" data-tab="devices">
+                <svg class="ic"><use href="#i-monitor-tab"/></svg><span>设备</span>
+              </button>
+              <button class="tab" data-tab="messages">
+                <svg class="ic"><use href="#i-message"/></svg><span>消息</span>
+                <span class="tab-badge" id="tabUnread">3</span>
+              </button>
+              <button class="tab" data-tab="account">
+                <svg class="ic"><use href="#i-user-round"/></svg><span>我的</span>
+              </button>
+            </nav>
+          </div>
+          <div class="home-bar"><i></i></div>
+
+          <!-- ============ 会话全屏 ============ -->
+          <div class="session-layer" id="sessionLayer">
+            <div class="s-top">
+              <button class="icon-btn" id="sessionBack" title="退出会话">
+                <svg class="ic"><use href="#i-arrow-left"/></svg>
+              </button>
+              <div class="s-title">
+                <b id="sPeer">设计工作站</b>
+                <span><i class="dot ok" id="sDot"></i><span id="sStateText">已连接 · 直连</span></span>
+              </div>
+              <div class="s-quality" id="sQualityBadge"><span class="badge">1080p60</span></div>
+              <button class="icon-btn" id="sessionInfo" title="连接信息" style="width:28px;height:28px;background:rgba(255,255,255,.08);color:var(--on-media)">
+                <svg class="ic" style="width:14px;height:14px"><use href="#i-info"/></svg>
+              </button>
+            </div>
+            <div class="s-stage">
+              <div class="s-canvas" id="sCanvas">
+                <div class="s-frame">
+                  <svg class="frame-grid" aria-hidden="true">
+                    <defs>
+                      <pattern id="paneGrid" width="240" height="240" patternUnits="userSpaceOnUse">
+                        <path d="M240 0H0V240" fill="none" stroke="rgba(255,255,255,.075)" stroke-width="1"/>
+                        <text x="14" y="30" fill="rgba(255,255,255,.14)" font-size="17" font-family="sans-serif">远端画面</text>
+                        <text id="frameGridSize" x="14" y="222" fill="rgba(255,255,255,.08)" font-size="13" font-family="sans-serif">1920×1080</text>
+                      </pattern>
+                    </defs>
+                    <rect width="100%" height="100%" fill="url(#paneGrid)"/>
+                  </svg>
+                  <span class="frame-tag tl">左上</span>
+                  <span class="frame-tag tr">右上</span>
+                  <span class="frame-tag bl">左下</span>
+                  <span class="frame-tag br">右下</span>
+                  <svg class="ic"><use href="#i-monitor-off"/></svg>
+                  <b>远端画面</b>
+                  <span id="frameCenterSize">演示占位 · 1920×1080 · 原始比例</span>
+                </div>
+              </div>
+              <div class="s-overlay" id="sOverlay"></div>
+            </div>
+            <div class="s-ctrl">
+              <button id="ctrlKeyboard"><svg class="ic"><use href="#i-key-round"/></svg><span>键盘</span></button>
+              <button id="ctrlQuality"><svg class="ic"><use href="#i-gauge"/></svg><span>画质</span></button>
+              <button id="ctrlFiles"><svg class="ic"><use href="#i-file-text"/></svg><span>文件</span></button>
+              <button class="danger" id="ctrlDisconnect"><svg class="ic"><use href="#i-x"/></svg><span>断开</span></button>
+              <div class="s-pan-row">
+                <span class="zoom-label" id="zoomLabel">适应屏幕</span>
+                <button id="panReset" type="button">还原</button>
+                <button id="panTop" type="button">回到左上角</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="sheet-scrim" id="sheetScrim">
+            <div class="sheet" id="sheet"></div>
+          </div>
+          <div class="toast" id="toast"></div>
+          <div class="ctx-menu" id="ctxMenu"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side-panel">
+      <div class="panel-card">
+        <h4>产品规则</h4>
+        <div class="panel-list">
+          <span>底部导航固定 4 格：连接 / 设备 / 消息 / 我的</span>
+          <span>进入会话全屏并隐藏导航，退出回到进入前标签</span>
+          <span>应用外壳固定竖屏，旋转手机界面不动</span>
+          <span>仅控制端，无被控端 / 屏幕墙入口</span>
+        </div>
+      </div>
+      <div class="panel-card">
+        <h4>页面三态</h4>
+        <p>作用于当前标签页；连接页作用在「受信设备」卡，连接码表单始终可用。</p>
+        <div class="row" id="stateChips">
+          <button class="chip active" data-state="normal">正常</button>
+          <button class="chip" data-state="loading">加载中</button>
+          <button class="chip" data-state="empty">空</button>
+          <button class="chip" data-state="failed">失败</button>
+        </div>
+        <h4 style="margin-top:11px">失败原因</h4>
+        <div class="row" id="reasonChips">
+          <button class="chip active" data-reason="network">网络不通</button>
+          <button class="chip" data-reason="auth">认证失败</button>
+          <button class="chip" data-reason="host">被控端未启动</button>
+          <button class="chip" data-reason="code">设备编号或连接码错误</button>
+        </div>
+        <div class="cmd-note" id="stateCmdNote">当前页 connect · 三态只切换视图，不调用命令</div>
+      </div>
+      <div class="panel-card">
+        <h4>会话模拟</h4>
+        <p>会话层覆盖整个屏幕并隐藏底部导航；退出后回到进入前的标签页。</p>
+        <div class="row">
+          <button class="chip" data-session="connected">已连接</button>
+          <button class="chip" data-session="reconnecting">画面恢复中</button>
+          <button class="chip" data-session="failed">断线失败</button>
+          <button class="chip" id="exitSessionBtn">退出会话</button>
+        </div>
+        <div class="cmd-note">start_connection → get_connection_progress → get_session_status / list_sessions → stop_session</div>
+      </div>
+      <div class="panel-card">
+        <h4>会话倍率（验收口径）</h4>
+        <p>默认「适应屏幕」：倍率 = min(可视宽 ÷ 远端宽, 可视高 ÷ 远端高)，整块画面等比完整可见，四边不裁切、不拉伸。</p>
+        <div class="row" id="sourceChips">
+          <button class="chip active" data-source="landscape">横屏源 1920×1080</button>
+          <button class="chip" data-source="portrait">竖屏源 1080×1920</button>
+        </div>
+        <div class="row" id="zoomChips" style="margin-top:6px">
+          <button class="chip active" data-zoom="1">适应 1×</button>
+          <button class="chip" data-zoom="2">2×</button>
+          <button class="chip" data-zoom="4">4× 上限</button>
+        </div>
+        <div class="panel-list" style="margin-top:8px">
+          <span>默认倍率 <b id="fitScaleText">--</b></span>
+          <span>当前相对倍率 <b id="relZoomText">适应屏幕（1.0×）</b>（上限 4.0×）</span>
+          <span>平移边界 <b id="panText">居中 / 不露黑边</b></span>
+        </div>
+        <div class="cmd-note">放大上限 4 倍；「还原」回到适应屏幕，「回到左上角」用于放大后快速复位平移。横屏源保持横向、竖屏源保持竖向，不旋转源画面。</div>
+      </div>
+      <div class="panel-card">
+        <h4>当前数据来源</h4>
+        <div class="panel-list">
+          <span><b>账号</b> get_account_state()</span>
+          <span><b>设备</b> list_devices()</span>
+          <span><b>消息</b> list_messages() / mark_all_read()</span>
+          <span><b>连接</b> start_connection() / get_connection_progress() / cancel_connection()</span>
+          <span><b>会话</b> get_session_status() / apply_quality_profile() / stop_session()</span>
+        </div>
+        <div class="cmd-note">原型不新增命令与字段；缺口 A1–A7 见说明文档。</div>
+      </div>
+    </aside>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+  /* ---------------- 演示数据：真实实现全部来自命令返回 ---------------- */
+  var ACCOUNT = {
+    name: 'wuge@example.com',
+    id: 'acc_8f3c21d4',
+    deviceId: 'MOBILEAAAAZZZZ99999',
+    expiresAt: '2026-11-10 21:42'
+  };
+
+  var DEVICES = [
+    { id: 'AAAABBBBCCCCDDDDEEEE', name: '设计工作站', platform: 'windows', kind: 'desktop', online: true, current: false, trusted: true, last: '2026-11-10 20:52', lastText: '今天 20:52', source: 'owner' },
+    { id: 'FFFFGGGGHHHHIIIIJJJJ', name: '财务笔记本', platform: 'macos', kind: 'laptop', online: true, current: false, trusted: true, last: '2026-11-09 18:41', lastText: '昨天 18:41', source: 'device' },
+    { id: 'KKKKLLLLMMMMNNNNOOOO', name: '差旅笔记本', platform: 'linux', kind: 'laptop', online: true, current: false, trusted: false, last: '2026-11-03 14:22', lastText: '11-03 14:22', source: '' },
+    { id: 'QQQQRRRRSSSSTTTTUUUU', name: '客厅一体机', platform: 'windows', kind: 'desktop', online: false, current: false, trusted: false, last: null, lastText: '未知', source: '' },
+    { id: 'MOBILEAAAAZZZZ99999', name: '我的手机', platform: 'android', kind: 'phone', online: true, current: true, trusted: false, last: '2026-11-10 19:30', lastText: '今天 19:30', source: '' }
+  ];
+
+  var MESSAGES = [
+    { cat: 'session', day: '今天', time: '20:52', title: '会话已结束', desc: '「设计工作站」· 时长 42 分钟 · 中继 720p30', result: 'success', unread: true },
+    { cat: 'session', day: '今天', time: '20:10', title: '会话已建立', desc: '「设计工作站」· 直连 · 1080p60', result: 'success', unread: true },
+    { cat: 'session', day: '今天', time: '18:36', title: '免确认连接已放行', desc: '「财务笔记本」· 来源：受信设备', result: 'success', unread: true },
+    { cat: 'binding', day: '今天', time: '09:18', title: '设备已绑定', desc: '「差旅笔记本」· Linux · 由本账号绑定', result: 'success', unread: false },
+    { cat: 'approval', day: '昨天', time: '22:05', title: '访问申请已批准', desc: '「客厅一体机」· 由本账号批准', result: 'success', unread: false },
+    { cat: 'session', day: '昨天', time: '21:40', title: '会话已结束', desc: '「财务笔记本」· 网络中断 · 未正常收尾', result: 'fail', unread: false },
+    { cat: 'session', day: '昨天', time: '21:02', title: '会话已建立', desc: '「财务笔记本」· 中继 · 720p30', result: 'success', unread: false },
+    { cat: 'binding', day: '11-08', time: '15:27', title: '信任设置已变更', desc: '「差旅笔记本」· 已撤销信任，恢复逐次确认', result: 'success', unread: false },
+    { cat: 'account', day: '11-06', time: '10:04', title: '新设备登录', desc: '「设计工作站」· Windows · 本账号', result: 'success', unread: false },
+    { cat: 'grant', day: '11-05', time: '22:13', title: '授权已撤销', desc: '「客厅一体机」· 一次性授权到期', result: 'success', unread: false }
+  ];
+
+  var REASONS = {
+    network: '网络不通，请检查手机网络后重试。',
+    auth: '认证失败，登录态可能已过期，请重新登录。',
+    host: '被控端未启动，请确认对端已打开 RDC 并处于可连接状态。',
+    code: '设备编号或连接码错误，请核对后重试。'
+  };
+
+  var CAT_META = {
+    session: { icon: 'monitor', label: '会话' },
+    binding: { icon: 'plus', label: '绑定' },
+    approval: { icon: 'shield-check', label: '审批' },
+    grant: { icon: 'key-round', label: '授权' },
+    account: { icon: 'user-round', label: '账号' }
+  };
+
+  var state = {
+    tab: 'connect',
+    theme: 'dark',
+    auth: 'in',
+    pageStates: { connect: 'normal', devices: 'normal', messages: 'normal', mine: 'normal' },
+    reason: 'network',
+    session: 'none',
+    returnTab: 'connect',
+    peer: '设计工作站',
+    quality: '1080p60',
+    devFilter: 'all',
+    devSearch: '',
+    msgFilter: 'all',
+    authTab: 'login',
+    readUntilText: '11-09 22:10',
+    immersive: false,
+    peerId: '',
+    accessCode: '',
+    scrolls: { connect: 0, devices: 0, messages: 0, account: 0 },
+    timers: []
+  };
+
+  var ICON = function (name, cls) {
+    return '<svg class="ic ' + (cls || '') + '"><use href="#i-' + name + '"/></svg>';
+  };
+  var shortId = function (id) { return id.slice(0, 4) + '…' + id.slice(-4); };
+  var platformIcon = function (p) {
+    return p === 'android' ? 'smartphone' : (p === 'macos' || p === 'linux' ? 'laptop' : 'monitor');
+  };
+  var platformLabel = function (p) {
+    return { windows: 'Windows 电脑', macos: 'macOS 电脑', linux: 'Linux 电脑', android: '安卓手机', ios: 'iPhone' }[p] || '平台未知';
+  };
+  var scopeForTab = function (tab) { return tab === 'account' ? 'mine' : tab; };
+
+  /* ---------------- 渲染 ---------------- */
+  function renderTrusted() {
+    var rows = DEVICES.filter(function (d) { return d.trusted && d.online && !d.current; });
+    $('#trustedList').innerHTML = rows.length ? rows.map(function (d) {
+      return '<div class="trusted-row" data-device="' + d.id + '">' +
+        '<div class="platform">' + ICON(platformIcon(d.platform)) + '</div>' +
+        '<div class="trusted-main"><b>' + d.name + '</b><span class="id-line"><span class="mono">' + shortId(d.id) + '</span><button class="copy-btn" data-copy="' + d.id + '" title="复制设备编号">' + ICON('copy') + '</button><span>上次 ' + d.lastText + '</span></span></div>' +
+        '<button class="btn small primary" data-quick="' + d.id + '">连接</button>' +
+        '</div>';
+    }).join('') : '<p class="card-desc" style="margin:0">暂无在线的受信设备。</p>';
+  }
+
+  function renderRecent() {
+    var rows = DEVICES.filter(function (d) { return !d.current; }).slice().sort(function (a, b) {
+      return String(b.last || '').localeCompare(String(a.last || ''));
+    }).slice(0, 3);
+    $('#recentList').innerHTML = rows.length ? rows.map(function (d) {
+      return '<div class="recent-row" data-device="' + d.id + '">' +
+        '<div class="platform">' + ICON(platformIcon(d.platform)) + '</div>' +
+        '<div class="recent-main"><b>' + d.name + '</b><span>' + platformLabel(d.platform) + ' · ' + shortId(d.id) + ' · 最近连接 ' + d.lastText + '</span></div>' +
+        (d.trusted ? '<button class="btn small primary" data-connect="' + d.id + '">一键连接</button>' : '<button class="btn small" data-connect="' + d.id + '">连接</button>') +
+        '</div>';
+    }).join('') : '<p class="card-desc" style="margin:0">还没有最近连接。</p>';
+  }
+
+  function deviceCard(d) {
+    var badges = '';
+    if (d.current) badges += '<span class="badge accent">本机</span>';
+    badges += d.trusted ? '<span class="badge ok">受信设备</span>' : '<span class="badge plain">需连接码</span>';
+    if (!d.online) badges += '<span class="badge plain">离线</span>';
+
+    var action;
+    if (d.current) action = '';
+    else if (!d.online) action = '<button class="btn small" disabled>离线</button>';
+    else action = '<button class="btn small ' + (d.trusted ? 'primary' : '') + '" data-connect="' + d.id + '">' + (d.trusted ? '一键连接' : '连接') + '</button>';
+
+    return '<div class="dev-card' + (d.online ? '' : ' offline') + '" data-device="' + d.id + '">' +
+      '<div class="dev-top">' +
+        '<div class="platform">' + ICON(platformIcon(d.platform)) + '<span class="dot ' + (d.online ? 'ok' : '') + '"></span></div>' +
+        '<div class="dev-name"><b>' + d.name + '</b><span class="id-line"><span class="mono">' + shortId(d.id) + '</span><button class="copy-btn" data-copy="' + d.id + '" title="复制设备编号">' + ICON('copy') + '</button></span></div>' +
+        action +
+      '</div>' +
+      '<div class="dev-badges">' + badges + '</div>' +
+      '<div class="dev-meta"><span class="tiny">' + ICON('clock') + '最近连接 ' + d.lastText + '</span><span class="tiny">' + platformLabel(d.platform) + '</span></div>' +
+      '</div>';
+  }
+
+  function renderDevices() {
+    var kw = state.devSearch.trim().toLowerCase();
+    var list = DEVICES.filter(function (d) {
+      if (state.devFilter === 'online' && !d.online) return false;
+      if (state.devFilter === 'offline' && d.online) return false;
+      if (kw && (d.name.toLowerCase().indexOf(kw) < 0 && d.id.toLowerCase().indexOf(kw) < 0)) return false;
+      return true;
+    });
+    var online = list.filter(function (d) { return d.online; });
+    var offline = list.filter(function (d) { return !d.online; });
+    var html = '';
+    if (online.length) {
+      html += '<div class="group-head"><b>在线</b><span>' + online.length + '</span><span class="line"></span></div>' + online.map(deviceCard).join('');
+    }
+    if (offline.length) {
+      html += '<div class="group-head" style="margin-top:6px"><b>离线</b><span>' + offline.length + '</span><span class="line"></span></div>' + offline.map(deviceCard).join('');
+    }
+    if (!html) {
+      html = '<p class="card-desc" style="padding:12px 2px">没有符合条件的设备。</p>';
+    }
+    $('#devList').innerHTML = html;
+  }
+
+  function renderMessages() {
+    var unread = MESSAGES.filter(function (m) { return m.unread; }).length;
+    var total = MESSAGES.length;
+    $('#msgUnread').textContent = String(unread);
+    $('#msgTotal').textContent = String(total);
+    $('#mineUnread').textContent = unread + ' 条未读';
+    $('#tabUnread').textContent = String(unread);
+    $('#tabUnread').classList.toggle('zero', unread === 0 || state.auth === 'out');
+
+    var list = MESSAGES.filter(function (m) { return state.msgFilter === 'all' || m.cat === state.msgFilter; });
+    var html = '';
+    var day = '';
+    list.forEach(function (m) {
+      if (m.day !== day) {
+        day = m.day;
+        html += '<div class="day-head"><span>' + day + '</span><span class="line"></span></div>';
+      }
+      var meta = CAT_META[m.cat] || { icon: 'info', label: m.cat };
+      var idx = MESSAGES.indexOf(m);
+      html += '<div class="msg-item' + (m.unread ? ' unread' : '') + '" data-msg="' + idx + '">' +
+        '<div class="msg-icon ' + m.cat + '">' + ICON(meta.icon) + '</div>' +
+        '<div class="msg-body">' +
+          '<div class="msg-title"><b>' + m.title + '</b><span class="badge ' + (m.result === 'fail' ? 'danger' : 'ok') + '">' + (m.result === 'fail' ? '失败' : '成功') + '</span></div>' +
+          '<p class="msg-desc">' + m.desc + '</p>' +
+        '</div>' +
+        '<div class="msg-side"><button class="copy-btn" data-copy-msg="' + idx + '" title="复制这条消息">' + ICON('copy') + '</button><time>' + m.time + '</time>' + (m.unread ? '<span class="unread-dot"></span>' : '') + '</div>' +
+        '</div>';
+    });
+    if (!list.length) {
+      html = '<p class="card-desc" style="padding:14px 2px">该分类下暂无消息。</p>';
+    }
+    $('#msgList').innerHTML = html;
+
+    var trusted = DEVICES.filter(function (d) { return d.trusted; }).length;
+    var online = DEVICES.filter(function (d) { return d.online; }).length;
+    $('#statBound').textContent = String(DEVICES.length);
+    $('#statTrusted').textContent = String(trusted);
+    $('#statOnline').textContent = String(online);
+    $('#msgReadUntil').textContent = state.auth === 'out' ? '未登录' : '已读至 ' + state.readUntilText;
+  }
+
+  function renderAccount() {
+    $('#accountName').textContent = state.auth === 'in' ? ACCOUNT.name : '未登录';
+    $('#accountId').textContent = state.auth === 'in' ? ACCOUNT.id : '—';
+    $('#accountAvatar').textContent = state.auth === 'in' ? ACCOUNT.name.slice(0, 1).toLowerCase() : '?';
+    $('#accountBadge').textContent = '已登录';
+    $('#sessionExpireText').textContent = '已登录 · 会话有效期至 ' + ACCOUNT.expiresAt;
+  }
+
+  function renderAll() {
+    renderTrusted();
+    renderRecent();
+    renderDevices();
+    renderMessages();
+    renderAccount();
+    applyAuth();
+    updateReasons();
+  }
+
+  /* ---------------- 三态与登录态 ---------------- */
+  function setPageState(scope, val) {
+    state.pageStates[scope] = val;
+    $$('[data-state-view][data-state-scope="' + scope + '"]').forEach(function (el) {
+      var visible = (state.auth === 'in' || scope === 'mine') && el.getAttribute('data-state-view') === val;
+      el.classList.toggle('hidden', !visible);
+    });
+    syncStateChips();
+    updateHash();
+  }
+
+  function applyAuth() {
+    var out = state.auth === 'out';
+    $$('[data-auth-gate]').forEach(function (g) { g.classList.toggle('hidden', !out); });
+    ['connect', 'devices', 'messages'].forEach(function (scope) {
+      $$('[data-state-view][data-state-scope="' + scope + '"]').forEach(function (el) {
+        var visible = !out && el.getAttribute('data-state-view') === state.pageStates[scope];
+        el.classList.toggle('hidden', !visible);
+      });
+    });
+    $('#mineIn').classList.toggle('hidden', out);
+    $('#mineOut').classList.toggle('hidden', !out);
+    $('#mineUnread').classList.toggle('hidden', out);
+    $('#recentBody').classList.toggle('hidden', out);
+    $('#sessionExpireText').textContent = out ? '未登录，点击登录账号' : '已登录 · 会话有效期至 ' + ACCOUNT.expiresAt;
+    $$('[data-state-view][data-state-scope="mine"]').forEach(function (el) {
+      el.classList.toggle('hidden', el.getAttribute('data-state-view') !== state.pageStates.mine);
+    });
+    renderMessages();
+    syncStateChips();
+  }
+
+  function updateReasons() {
+    $$('.fail-reason').forEach(function (el) { el.textContent = REASONS[state.reason]; });
+  }
+
+  function syncStateChips() {
+    var scope = scopeForTab(state.tab);
+    var val = state.pageStates[scope];
+    $$('#stateChips .chip').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-state') === val);
+    });
+    $$('#reasonChips .chip').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-reason') === state.reason);
+    });
+    $('#stateCmdNote').textContent = '当前页 ' + scope + ' · ' + (state.auth === 'out' && scope !== 'mine'
+      ? '未登录只显示登录引导'
+      : 'data-state-view="' + val + '"（视图状态，不调用命令）');
+  }
+
+  /* ---------------- 导航、主题、方向 ---------------- */
+  function setTab(tab) {
+    var scroller = $('#pageScroll');
+    state.scrolls[state.tab] = scroller.scrollTop;
+    state.tab = tab;
+    $$('.page').forEach(function (p) { p.classList.toggle('active', p.getAttribute('data-page') === tab); });
+    $$('.tab').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
+    requestAnimationFrame(function () { scroller.scrollTop = state.scrolls[tab] || 0; });
+    syncStateChips();
+    updateHash();
+  }
+
+  function setTheme(theme) {
+    state.theme = theme;
+    document.body.classList.toggle('light', theme === 'light');
+    $$('#themeSeg button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-theme') === theme); });
+    updateHash();
+  }
+
+  function setAuth(auth) {
+    state.auth = auth;
+    $$('#authSeg button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-auth') === auth); });
+    if (auth === 'in' && state.pageStates.mine === 'empty') state.pageStates.mine = 'normal';
+    applyAuth();
+    updateHash();
+  }
+
+  /* ---------------- 连接流程 ---------------- */
+  function clearTimers() {
+    state.timers.forEach(function (t) { clearTimeout(t); clearInterval(t); });
+    state.timers = [];
+  }
+
+  function startConnection(peerName, peerId, accessCode) {
+    if (state.auth === 'out') {
+      toast('未登录：仅能使用连接码连接');
+    }
+    state.peer = peerName || '远端设备';
+    state.peerId = peerId || '';
+    state.accessCode = accessCode || '';
+    state.session = 'connecting';
+    clearTimers();
+    var card = $('#connectProgress');
+    card.classList.remove('hidden');
+    var stage = 0;
+    var texts = ['校验设备码与连接码', '建立加密通道', '协商传输与画质', '等待远端画面'];
+    $$('#connectSteps .step').forEach(function (el, i) {
+      el.classList.toggle('done', false);
+      el.classList.toggle('active', i === 0);
+    });
+    $('#connectProgressBar').style.width = '8%';
+    $('#connectProgressStep').textContent = '0/4';
+    $('#connectProgressTitle').textContent = '正在连接 ' + state.peer + '…';
+    var timer = setInterval(function () {
+      stage += 1;
+      var shown = Math.min(stage, 4);
+      $('#connectProgressStep').textContent = shown + '/4';
+      $('#connectProgressBar').style.width = Math.max(8, shown / 4 * 100) + '%';
+      $('#connectProgressTitle').textContent = stage <= 4 ? texts[stage - 1] : '即将进入会话';
+      $$('#connectSteps .step').forEach(function (el, i) {
+        el.classList.toggle('done', i < stage - 1);
+        el.classList.toggle('active', i === stage - 1);
+      });
+      if (stage >= 4) {
+        clearInterval(timer);
+        var done = setTimeout(function () {
+          card.classList.add('hidden');
+          enterSession();
+        }, 480);
+        state.timers.push(done);
+      }
+    }, 430);
+    state.timers.push(timer);
+    updateHash();
+  }
+
+  function cancelConnection() {
+    clearTimers();
+    $('#connectProgress').classList.add('hidden');
+    state.session = 'none';
+    toast('已取消连接（cancel_connection）');
+    updateHash();
+  }
+
+  function enterSession() {
+    state.returnTab = state.tab;
+    state.session = 'connected';
+    $('#sPeer').textContent = state.peer;
+    $('#sessionLayer').classList.add('open');
+    showSessionMode('connected');
+    updateHash();
+  }
+
+  function sessionOverlay(mode) {
+    var box = $('#sOverlay');
+    if (mode === 'connected') {
+      box.classList.remove('open');
+      box.innerHTML = '';
+      return;
+    }
+    if (mode === 'reconnecting' || mode === 'connecting') {
+      box.innerHTML = '<div class="spin-wrap"><span class="spinner"></span></div>' +
+        '<h3>' + (mode === 'connecting' ? '正在重新连接…' : '画面恢复中') + '</h3>' +
+        '<p>' + (mode === 'connecting' ? '正在重新建立会话，请稍候。' : '网络中断，正在尝试恢复画面，操作暂不可用。') + '</p>' +
+        '<div class="err">' + ICON('wifi-off') + '<span class="fail-reason">' + REASONS[state.reason] + '</span><button class="copy-btn" data-copy-reason title="复制错误原因">' + ICON('copy') + '</button></div>' +
+        '<div class="actions"><button class="btn" data-session-action="exit">退出</button><button class="btn primary" data-session-action="retry">立即重试</button></div>';
+      box.classList.add('open');
+      return;
+    }
+    box.innerHTML = '<div class="spin-wrap">' + ICON('alert') + '</div>' +
+      '<h3>连接已中断</h3>' +
+      '<p>会话未能恢复，请确认对端状态后重试。</p>' +
+      '<div class="err">' + ICON('alert') + '<span class="fail-reason">' + REASONS[state.reason] + '</span><button class="copy-btn" data-copy-reason title="复制错误原因">' + ICON('copy') + '</button></div>' +
+      '<div class="actions"><button class="btn" data-session-action="exit">退出会话</button><button class="btn primary" data-session-action="retry">重新连接</button></div>';
+    box.classList.add('open');
+  }
+
+  function showSessionMode(mode) {
+    state.session = mode === 'connected' ? 'connected' : (mode === 'failed' ? 'failed' : mode);
+    $('#phone').classList.add('in-session');
+    $('#phone').classList.add('immersive');
+    state.immersive = true;
+    $('#sessionLayer').classList.add('open');
+    VIEW.zoom = 1;
+    requestAnimationFrame(function () { requestAnimationFrame(function () { layoutCanvas(true); }); });
+    showFloat();
+    sessionOverlay(mode);
+    var dot = $('#sDot');
+    var text = $('#sStateText');
+    dot.className = 'dot ' + (mode === 'connected' ? 'ok' : mode === 'failed' ? 'danger' : 'warn');
+    text.textContent = mode === 'connected' ? '已连接 · 直连' : mode === 'failed' ? '已断开' : (mode === 'connecting' ? '正在重新连接' : '画面恢复中');
+    $('#sQualityBadge').innerHTML = '<span class="badge">' + state.quality + '</span>';
+    updateHash();
+  }
+
+  function exitSession(silent) {
+    clearTimers();
+    $('#connectProgress').classList.add('hidden');
+    $('#phone').classList.remove('in-session');
+    $('#sessionLayer').classList.remove('open');
+    $('#sessionLayer').classList.remove('float-on');
+    state.session = 'none';
+    state.immersive = false;
+    $('#phone').classList.remove('immersive');
+    $('#sOverlay').classList.remove('open');
+    setTab(state.returnTab || 'connect');
+    if (!silent) toast('会话已结束（stop_session）');
+    updateHash();
+  }
+
+  /* ---------------- 弹层 ---------------- */
+  function openSheet(html) {
+    $('#sheet').innerHTML = html;
+    $('#sheetScrim').classList.add('open');
+  }
+  function closeSheet() {
+    $('#sheetScrim').classList.remove('open');
+    $('#sheet').innerHTML = '';
+    sheetConfirmAction = null;
+  }
+
+  function connectSheet(id) {
+    var d = DEVICES.filter(function (x) { return x.id === id; })[0];
+    if (!d) return;
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>连接到「' + d.name + '」</h3>' +
+      '<p class="sheet-desc">该设备未受信，需要输入对端显示的 6 位连接码。界面只收集并提交连接码。</p>' +
+      '<div class="field"><label for="sheetCode">连接码</label><input id="sheetCode" maxlength="6" inputmode="numeric" placeholder="6 位数字"></div>' +
+      '<div class="form-error" id="sheetError"></div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>取消</button><button class="btn primary" data-sheet-connect="' + id + '">连接</button></div>' +
+      '<div class="cmd-note">start_connection(device_id="' + id + '", access_code)</div>');
+    setTimeout(function () { var i = $('#sheetCode'); if (i) i.focus(); }, 60);
+  }
+
+  function bindSheet() {
+    if (state.auth === 'out') { toast('请先登录后再绑定设备'); setTab('account'); return; }
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>绑定设备</h3>' +
+      '<p class="sheet-desc">在桌面端「设备」页复制 20 位设备码，并输入对端显示的 6 位连接码。</p>' +
+      '<div class="field"><label for="bindId">设备码</label><input id="bindId" maxlength="20" placeholder="20 位设备码"></div>' +
+      '<div class="field"><label for="bindCode">连接码</label><input id="bindCode" maxlength="6" inputmode="numeric" placeholder="6 位数字"></div>' +
+      '<div class="form-error" id="bindError"></div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>取消</button><button class="btn primary" id="bindSubmit">绑定</button></div>' +
+      '<div class="cmd-note">bind_device(device_id, access_code)；成功后重新调用 list_devices()</div>');
+  }
+
+  function logoutSheet() {
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>退出登录？</h3>' +
+      '<p class="sheet-desc">将吊销本机设备令牌与会话令牌，断开关联会话，并清空本机登录态。已绑定设备不会被解绑。</p>' +
+      '<div class="warn-line">退出后需要重新输入账号与口令才能查看设备与消息。</div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>取消</button><button class="btn danger" id="logoutConfirm">退出登录</button></div>' +
+      '<div class="cmd-note">仅调用 logout_account()；界面不写吊销逻辑</div>');
+  }
+
+  function settingsSheet() {
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>设置</h3>' +
+      '<p class="sheet-desc">入口调用 open_settings()，返回 section=general；以下为视图状态与说明。</p>' +
+      '<div class="kv">' +
+        '<div class="kv-row"><span>外观</span><b>跟随顶部深色 / 浅色切换</b></div>' +
+        '<div class="kv-row"><span>画质档位</span><b>会话内通过 apply_quality_profile 调整</b></div>' +
+        '<div class="kv-row"><span>当前画质</span><b>' + state.quality + '</b></div>' +
+        '<div class="kv-row"><span>版本</span><b>0.0.0 · 原型</b></div>' +
+      '</div>' +
+      '<p class="form-note">安卓只做控制端，设置中不提供被控端与屏幕墙选项。</p>' +
+      '<div class="actions"><button class="btn" data-sheet-close>关闭</button></div>');
+  }
+
+  function qualitySheet() {
+    var opts = ['auto', '4K60', '1440p60', '1080p60', '1080p30'];
+    var rows = opts.map(function (p) {
+      return '<button class="list-row" data-quality="' + p + '">' +
+        '<svg class="ic"><use href="#i-gauge"/></svg>' +
+        '<span class="list-main"><b>' + (p === 'auto' ? '自动（推荐）' : p) + '</b><span>' + (p === state.quality ? '当前档位' : '点击切换') + '</span></span>' +
+        (p === state.quality ? '<span class="badge accent">使用中</span>' : '') +
+        '</button>';
+    }).join('');
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>画质档位</h3>' +
+      '<p class="sheet-desc">会话内调用 apply_quality_profile(session_id, profile)；是否降档由命令层与策略决定，界面只提交选择。</p>' +
+      '<div class="list-card" style="margin:0">' + rows + '</div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>关闭</button></div>');
+  }
+
+  /* ---------------- 复制与右键 / 长按菜单 ---------------- */
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* 忽略 */ }
+    document.body.removeChild(ta);
+  }
+
+  function copyText(text) {
+    var value = String(text == null ? '' : text).replace(/^\s+|\s+$/g, '');
+    if (!value) { toast('暂无可复制内容'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).catch(function () { legacyCopy(value); });
+    } else {
+      legacyCopy(value);
+    }
+    toast('已复制', 1500);
+  }
+
+  function findDevice(id) {
+    return DEVICES.filter(function (d) { return d.id === id; })[0];
+  }
+
+  function msgText(m) {
+    return '[' + m.day + ' ' + m.time + '] ' + m.title + '｜' + m.desc + '｜' + (m.result === 'fail' ? '失败' : '成功');
+  }
+
+  function copyAllMessages() {
+    if (state.auth === 'out') { toast('请先登录'); return; }
+    copyText(MESSAGES.map(function (m) { return msgText(m); }).join('\n'));
+  }
+
+  function exportMessages() {
+    if (state.auth === 'out') { toast('请先登录'); return; }
+    toast('已导出 ' + MESSAGES.length + ' 条消息（原型演示）');
+  }
+
+  var TRANSFERS = [
+    { id: 'f1', name: '会议记录.pdf', path: 'Download/会议记录.pdf', pct: 100, status: 'done' },
+    { id: 'f2', name: '素材包.zip', path: 'Download/素材包.zip', pct: 63, status: 'running' },
+    { id: 'f3', name: '截图.png', path: 'Pictures/截图.png', pct: 27, status: 'failed' }
+  ];
+
+  function xferStatusText(t) {
+    if (t.status === 'done') return '已完成';
+    if (t.status === 'running') return '正在传输 ' + t.pct + '%';
+    if (t.status === 'paused') return '已暂停 ' + t.pct + '%';
+    return '传输失败';
+  }
+
+  function transfersHtml() {
+    return TRANSFERS.map(function (t) {
+      var running = t.status === 'running' || t.status === 'paused';
+      return '<div class="xfer-row" data-xfer="' + t.id + '">' +
+        '<div class="xfer-ic">' + ICON('file-text') + '</div>' +
+        '<div class="xfer-main"><b>' + t.name + '</b>' +
+        (running ? '<div class="xfer-bar"><i style="width:' + t.pct + '%"></i></div>' : '') +
+        '<span class="mono">' + t.path + '</span></div>' +
+        '<span class="xfer-state' + (t.status === 'failed' ? ' bad' : '') + '">' + xferStatusText(t) + '</span>' +
+        '<button class="copy-btn" data-copy="' + t.path.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '" title="复制文件路径">' + ICON('copy') + '</button>' +
+        '</div>';
+    }).join('');
+  }
+
+  function refreshTransfers() {
+    var box = $('#xferList');
+    if (box) box.innerHTML = transfersHtml();
+  }
+
+  function filesSheet() {
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>文件传输</h3>' +
+      '<p class="sheet-desc">会话内文件传输列表；长按条目或右键可暂停、取消、重试、在文件夹中显示、复制路径。契约暂无传输命令，原型只演示交互（缺口 G11）。</p>' +
+      '<div id="xferList">' + transfersHtml() + '</div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>关闭</button></div>');
+  }
+
+  function sessionInfoSheet() {
+    var code = state.accessCode || '免连接码';
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>连接信息</h3>' +
+      '<p class="sheet-desc">以下内容可逐项复制。设备编号与地址取自连接建立结果，连接码仅在对端启用时存在。</p>' +
+      '<div class="kv">' +
+        '<div class="kv-row"><span>设备名称</span><b>' + state.peer + '</b></div>' +
+        '<div class="kv-row"><span>设备编号</span><b class="mono" style="display:flex;align-items:center;gap:4px">' + (state.peerId || '未知') + '<button class="copy-btn" data-copy="' + (state.peerId || '') + '" title="复制设备编号">' + ICON('copy') + '</button></b></div>' +
+        '<div class="kv-row"><span>连接码</span><b class="mono" style="display:flex;align-items:center;gap:4px">' + code + (state.accessCode ? '<button class="copy-btn" data-copy="' + state.accessCode + '" title="复制连接码">' + ICON('copy') + '</button>' : '') + '</b></div>' +
+        '<div class="kv-row"><span>地址与端口</span><b class="mono" style="display:flex;align-items:center;gap:4px">10.0.0.12:52001<button class="copy-btn" data-copy="10.0.0.12:52001" title="复制地址与端口">' + ICON('copy') + '</button></b></div>' +
+        '<div class="kv-row"><span>传输方式</span><b>点对点直连</b></div>' +
+      '</div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>关闭</button></div>');
+  }
+
+  var sheetConfirmAction = null;
+
+  function confirmSheet(title, desc, okText, action) {
+    sheetConfirmAction = action;
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>' + title + '</h3>' +
+      '<p class="sheet-desc">' + desc + '</p>' +
+      '<div class="actions"><button class="btn" data-sheet-close>取消</button><button class="btn danger" id="sheetConfirm">' + okText + '</button></div>');
+  }
+
+  function renameSheet(d) {
+    state.renameId = d.id;
+    openSheet('<div class="sheet-grab"></div>' +
+      '<h3>重命名设备</h3>' +
+      '<p class="sheet-desc">只修改本账号内的显示名称，不影响对端设备名。</p>' +
+      '<div class="field"><label for="renameInput">设备名称</label><input id="renameInput" maxlength="24" value="' + d.name + '"></div>' +
+      '<div class="form-error" id="renameError"></div>' +
+      '<div class="actions"><button class="btn" data-sheet-close>取消</button><button class="btn primary" id="renameSubmit">保存</button></div>' +
+      '<div class="cmd-note">契约暂无重命名命令（缺口 G9），原型仅演示交互。</div>');
+  }
+
+  function toggleImmersive() {
+    state.immersive = !state.immersive;
+    $('#phone').classList.toggle('immersive', state.immersive);
+    toast(state.immersive ? '已进入全屏' : '已退出全屏');
+  }
+
+  function copyConnectionInfo() {
+    copyText('设备：' + state.peer + '｜设备编号：' + (state.peerId || '未知') + '｜连接码：' + (state.accessCode || '免连接码') + '｜地址与端口：10.0.0.12:52001');
+  }
+
+  function askDisconnect() {
+    confirmSheet('断开当前会话？', '断开后画面立即停止，重新连接需要再次确认。', '断开', function () { exitSession(); });
+  }
+
+  function openCtxMenu(x, y, items) {
+    var menu = $('#ctxMenu');
+    menu.innerHTML = items.map(function (it, i) {
+      if (it.sep) return '<div class="ctx-sep"></div>';
+      var right = '';
+      if (it.checked) right = '<span class="ctx-check">' + ICON('check') + '</span>';
+      else if (it.hint) right = '<span class="hint">' + it.hint + '</span>';
+      return '<button class="ctx-item' + (it.danger ? ' danger' : '') + '" data-ctx-index="' + i + '"' + (it.disabled ? ' disabled' : '') + '>' +
+        (it.icon ? ICON(it.icon) : '') + '<span>' + it.label + '</span>' + right + '</button>';
+    }).join('');
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    menu.classList.add('open');
+    var rect = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) + 'px';
+    menu._items = items;
+  }
+
+  function closeCtxMenu() {
+    var menu = $('#ctxMenu');
+    if (!menu) return;
+    menu.classList.remove('open');
+    menu.innerHTML = '';
+    menu._items = null;
+  }
+
+  function sessionMenu() {
+    return [
+      { label: '请求关键帧', icon: 'image', action: function () { toast('已请求关键帧'); } },
+      { label: state.immersive ? '退出全屏' : '全屏', icon: state.immersive ? 'minimize' : 'maximize', checked: state.immersive, action: toggleImmersive },
+      { label: '自适应画质', icon: 'gauge', checked: state.quality === 'auto', action: function () { state.quality = 'auto'; $('#sQualityBadge').innerHTML = '<span class="badge">自动</span>'; toast('已切换为自适应画质'); } },
+      { label: '复制连接信息', icon: 'copy', action: copyConnectionInfo },
+      { sep: true },
+      { label: '断开', icon: 'x', danger: true, action: askDisconnect }
+    ];
+  }
+
+  function deviceMenu(d) {
+    return [
+      { label: '连接', icon: 'link-2', disabled: d.current || !d.online, hint: d.current ? '本机' : (d.online ? '' : '离线'), action: function () {
+          if (d.trusted) startConnection(d.name, d.id);
+          else connectSheet(d.id);
+        } },
+      { label: '设为受信', icon: 'shield-check', disabled: d.current || d.trusted, action: function () {
+          confirmSheet('设为受信设备？', '设为受信后，从本机连接「' + d.name + '」可免连接码确认。', '设为受信', function () {
+            d.trusted = true;
+            d.source = 'owner';
+            renderAll();
+            toast('已设为受信（set_trust_policy）');
+          });
+        } },
+      { label: '撤销信任', icon: 'shield-off', disabled: d.current || !d.trusted, action: function () {
+          confirmSheet('撤销信任？', '撤销后连接「' + d.name + '」需要每次都输入连接码确认。', '撤销信任', function () {
+            d.trusted = false;
+            d.source = '';
+            renderAll();
+            toast('已撤销信任（set_trust_policy）');
+          });
+        } },
+      { label: '重命名', icon: 'pencil', disabled: d.current, action: function () { renameSheet(d); } },
+      { label: '复制设备编号', icon: 'copy', action: function () { copyText(d.id); } },
+      { sep: true },
+      { label: '删除', icon: 'trash', danger: true, disabled: d.current, action: function () {
+          confirmSheet('删除设备？', '将从本账号移除「' + d.name + '」，不会卸载对端软件。', '删除', function () {
+            DEVICES.splice(DEVICES.indexOf(d), 1);
+            renderAll();
+            toast('已删除设备（原型演示）');
+          });
+        } }
+    ];
+  }
+
+  function messageMenu(m) {
+    return [
+      { label: '复制', icon: 'copy', action: function () { copyText(msgText(m)); } },
+      { label: '复制全部', icon: 'copy', action: copyAllMessages },
+      { label: '导出', icon: 'download', action: exportMessages }
+    ];
+  }
+
+  function transferMenu(t) {
+    var running = t.status === 'running';
+    return [
+      { label: running ? '暂停' : '继续', icon: running ? 'pause' : 'play', disabled: t.status === 'done' || t.status === 'failed', action: function () {
+          t.status = running ? 'paused' : 'running';
+          refreshTransfers();
+          toast(running ? '已暂停传输' : '已继续传输');
+        } },
+      { label: '取消', icon: 'x', disabled: t.status === 'done', action: function () { t.status = 'failed'; refreshTransfers(); toast('已取消传输'); } },
+      { label: '重试', icon: 'refresh-cw', disabled: t.status !== 'failed', action: function () { t.status = 'running'; t.pct = 5; refreshTransfers(); toast('已重新开始传输'); } },
+      { label: '在文件夹中显示', icon: 'folder-open', disabled: t.status !== 'done', action: function () { toast('已在文件夹中显示（原型演示）'); } },
+      { label: '复制路径', icon: 'copy', action: function () { copyText(t.path); } }
+    ];
+  }
+
+  function menuFor(el, x, y) {
+    if (!el) return false;
+    if (el.hasAttribute('data-device')) {
+      var d = findDevice(el.getAttribute('data-device'));
+      if (!d) return false;
+      openCtxMenu(x, y, deviceMenu(d));
+      return true;
+    }
+    if (el.hasAttribute('data-msg')) {
+      var m = MESSAGES[parseInt(el.getAttribute('data-msg'), 10)];
+      if (!m) return false;
+      openCtxMenu(x, y, messageMenu(m));
+      return true;
+    }
+    if (el.hasAttribute('data-xfer')) {
+      var t = TRANSFERS.filter(function (x2) { return x2.id === el.getAttribute('data-xfer'); })[0];
+      if (!t) return false;
+      openCtxMenu(x, y, transferMenu(t));
+      return true;
+    }
+    if (el.classList.contains('s-stage')) {
+      openCtxMenu(x, y, sessionMenu());
+      return true;
+    }
+    return false;
+  }
+
+  function menuTargetOf(node) {
+    return node && node.closest ? node.closest('[data-device], [data-msg], [data-xfer], .s-stage') : null;
+  }
+
+  /* ---------------- 提示与深链 ---------------- */
+  var toastTimer = null;
+  function toast(msg, ms) {
+    var el = $('#toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, ms || 1500);
+  }
+
+  function updateHash() {
+    var parts = ['tab=' + state.tab, 'theme=' + state.theme];
+    if (state.auth === 'out') parts.push('auth=out');
+    var scope = scopeForTab(state.tab);
+    if (state.pageStates[scope] !== 'normal') parts.push('state=' + state.pageStates[scope]);
+    if (state.session !== 'none') parts.push('session=' + state.session);
+    try { history.replaceState(null, '', '#' + parts.join('&')); } catch (e) { /* file:// 下忽略 */ }
+  }
+
+  function readHash() {
+    var raw = location.hash.replace(/^#/, '');
+    if (!raw) return;
+    var map = {};
+    raw.split('&').forEach(function (kv) {
+      var p = kv.split('=');
+      map[decodeURIComponent(p[0])] = decodeURIComponent(p[1] || '');
+    });
+    if (['connect', 'devices', 'messages', 'account'].indexOf(map.tab) >= 0) state.tab = map.tab;
+    if (map.theme === 'light') state.theme = 'light';
+    if (map.auth === 'out') state.auth = 'out';
+    if (map.state) state.pageStates[scopeForTab(state.tab)] = map.state;
+    if (map.session === 'connected' || map.session === 'reconnecting' || map.session === 'failed') {
+      state.session = map.session;
+      state.returnTab = state.tab;
+      if (!state.peerId) state.peerId = 'AAAABBBBCCCCDDDDEEEE';
+      $('#sessionLayer').classList.add('open');
+      $('#sPeer').textContent = state.peer;
+      showSessionMode(map.session);
+    }
+  }
+
+  /* ---------------- 事件 ---------------- */
+  document.addEventListener('click', function (e) {
+    var cp = e.target.closest('[data-copy], [data-copy-msg], [data-copy-input], [data-copy-reason]');
+    if (cp) {
+      if (cp.hasAttribute('data-copy')) {
+        copyText(cp.getAttribute('data-copy'));
+      } else if (cp.hasAttribute('data-copy-msg')) {
+        var cm = MESSAGES[parseInt(cp.getAttribute('data-copy-msg'), 10)];
+        if (cm) copyText(msgText(cm));
+      } else if (cp.hasAttribute('data-copy-input')) {
+        var cin = document.getElementById(cp.getAttribute('data-copy-input'));
+        copyText(cin ? cin.value : '');
+      } else {
+        var reasonEl = cp.parentNode.querySelector('.fail-reason');
+        copyText(reasonEl ? reasonEl.textContent : '');
+      }
+      return;
+    }
+
+    var ci = e.target.closest('#ctxMenu .ctx-item');
+    if (ci) {
+      var items = $('#ctxMenu')._items || [];
+      var ctxItem = items[parseInt(ci.getAttribute('data-ctx-index'), 10)];
+      closeCtxMenu();
+      if (ctxItem && !ctxItem.disabled && typeof ctxItem.action === 'function') ctxItem.action();
+      return;
+    }
+    if (!e.target.closest('#ctxMenu')) closeCtxMenu();
+
+    var t = e.target.closest('[data-tab], [data-goto], [data-connect], [data-quick], [data-retry], [data-state], [data-reason], [data-session], [data-session-action], [data-sheet-connect], [data-quality], [data-sheet-close], [data-authtab], #logoutConfirm, #bindSubmit, #sheetConfirm, #renameSubmit');
+    if (!t) return;
+
+    if (t.id === 'sheetConfirm') {
+      var confirmAction = sheetConfirmAction;
+      closeSheet();
+      if (confirmAction) confirmAction();
+      return;
+    }
+
+    if (t.id === 'renameSubmit') {
+      var renameValue = ($('#renameInput') && $('#renameInput').value || '').trim();
+      if (!renameValue) { $('#renameError').textContent = '设备名称不能为空'; return; }
+      var renameDev = findDevice(state.renameId);
+      if (renameDev) renameDev.name = renameValue;
+      closeSheet();
+      renderAll();
+      toast('设备名称已更新（原型演示）');
+      return;
+    }
+
+    if (t.id === 'logoutConfirm') {
+      closeSheet();
+      if ($('#sessionLayer').classList.contains('open')) exitSession(true);
+      setAuth('out');
+      state.pageStates.mine = 'normal';
+      setTab('account');
+      applyAuth();
+      toast('已退出登录（logout_account）');
+      return;
+    }
+
+    if (t.id === 'bindSubmit') {
+      var bindId = $('#bindId').value.trim().toUpperCase();
+      var bindCode = $('#bindCode').value.trim();
+      var bindErr = $('#bindError');
+      if (bindId.length !== 20) { bindErr.textContent = '设备码应为 20 位'; return; }
+      if (!/^\d{6}$/.test(bindCode)) { bindErr.textContent = '连接码应为 6 位数字'; return; }
+      DEVICES.push({ id: bindId, name: '新绑定设备', platform: 'unknown', kind: 'desktop', online: true, current: false, trusted: false, last: '2026-11-10 21:08', lastText: '刚刚', source: '' });
+      closeSheet();
+      renderAll();
+      toast('已调用 bind_device，设备已加入列表');
+      return;
+    }
+
+    if (t.hasAttribute('data-tab')) { setTab(t.getAttribute('data-tab')); return; }
+
+    if (t.hasAttribute('data-goto')) {
+      closeSheet();
+      setTab(t.getAttribute('data-goto'));
+      return;
+    }
+
+    if (t.hasAttribute('data-connect')) {
+      var dev = DEVICES.filter(function (d) { return d.id === t.getAttribute('data-connect'); })[0];
+      if (!dev) return;
+      if (dev.trusted) { startConnection(dev.name, dev.id); }
+      else { connectSheet(dev.id); }
+      return;
+    }
+
+    if (t.hasAttribute('data-quick')) {
+      var qd = DEVICES.filter(function (d) { return d.id === t.getAttribute('data-quick'); })[0];
+      if (qd) startConnection(qd.name, qd.id);
+      return;
+    }
+
+    if (t.hasAttribute('data-retry')) {
+      var scope = t.getAttribute('data-retry');
+      setPageState(scope, 'normal');
+      toast('已重新请求（原型仅切换视图）');
+      return;
+    }
+
+    if (t.hasAttribute('data-state')) {
+      setPageState(scopeForTab(state.tab), t.getAttribute('data-state'));
+      return;
+    }
+
+    if (t.hasAttribute('data-reason')) {
+      state.reason = t.getAttribute('data-reason');
+      updateReasons();
+      syncStateChips();
+      return;
+    }
+
+    if (t.hasAttribute('data-session')) {
+      var mode = t.getAttribute('data-session');
+      if (!$('#sessionLayer').classList.contains('open')) {
+        state.returnTab = state.tab;
+        $('#sessionLayer').classList.add('open');
+        $('#sPeer').textContent = state.peer;
+      }
+      showSessionMode(mode);
+      return;
+    }
+
+    if (t.hasAttribute('data-session-action')) {
+      if (t.getAttribute('data-session-action') === 'retry') {
+        showSessionMode('connecting');
+        var timer = setTimeout(function () { showSessionMode('connected'); }, 1300);
+        state.timers.push(timer);
+      } else {
+        exitSession();
+      }
+      return;
+    }
+
+    if (t.hasAttribute('data-quality')) {
+      state.quality = t.getAttribute('data-quality');
+      $('#sQualityBadge').innerHTML = '<span class="badge">' + state.quality + '</span>';
+      closeSheet();
+      toast('已切换画质 ' + state.quality + '（apply_quality_profile）');
+      return;
+    }
+
+    if (t.hasAttribute('data-sheet-close')) { closeSheet(); return; }
+
+    if (t.hasAttribute('data-sheet-connect')) {
+      var code = ($('#sheetCode') && $('#sheetCode').value || '').trim();
+      var err = $('#sheetError');
+      if (!/^\d{6}$/.test(code)) { err.textContent = '连接码应为 6 位数字'; return; }
+      var targetId = t.getAttribute('data-sheet-connect');
+      var targetDev = DEVICES.filter(function (d) { return d.id === targetId; })[0] || {};
+      closeSheet();
+      startConnection(targetDev.name, targetId, code);
+      return;
+    }
+
+    if (t.hasAttribute('data-authtab')) {
+      state.authTab = t.getAttribute('data-authtab');
+      $$('#authTabs button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-authtab') === state.authTab); });
+      $('#confirmField').classList.toggle('hidden', state.authTab !== 'register');
+      $('#authSubmitText').textContent = state.authTab === 'register' ? '注册并登录' : '登录';
+      $('#authPassword').setAttribute('autocomplete', state.authTab === 'register' ? 'new-password' : 'current-password');
+      $('#authError').textContent = '';
+      return;
+    }
+  });
+
+  $$('#themeSeg button').forEach(function (b) {
+    b.addEventListener('click', function () { setTheme(b.getAttribute('data-theme')); });
+  });
+  $$('#authSeg button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      setAuth(b.getAttribute('data-auth'));
+      if (b.getAttribute('data-auth') === 'out') setTab('account');
+    });
+  });
+
+  $('#resetBtn').addEventListener('click', function () {
+    try { location.hash = ''; } catch (e) {}
+    location.reload();
+  });
+
+  $('#sheetScrim').addEventListener('click', function (e) {
+    if (e.target === $('#sheetScrim')) closeSheet();
+  });
+
+  $$('#devFilter .chip-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      state.devFilter = b.getAttribute('data-filter');
+      $$('#devFilter .chip-btn').forEach(function (x) { x.classList.toggle('active', x === b); });
+      renderDevices();
+    });
+  });
+  $('#devSearch').addEventListener('input', function (e) {
+    state.devSearch = e.target.value;
+    renderDevices();
+  });
+  $$('#msgFilter .chip-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      state.msgFilter = b.getAttribute('data-filter');
+      $$('#msgFilter .chip-btn').forEach(function (x) { x.classList.toggle('active', x === b); });
+      renderMessages();
+    });
+  });
+
+  $('#btnConnectByCode').addEventListener('click', function () {
+    var device = $('#inDeviceCode').value.trim().toUpperCase();
+    var code = $('#inAccessCode').value.trim();
+    var errBox = $('#connectError');
+    if (!device || !code) { errBox.textContent = '请输入设备码与连接码'; return; }
+    if (device.length !== 20) { errBox.textContent = '设备码应为 20 位'; return; }
+    if (!/^\d{6}$/.test(code)) { errBox.textContent = '连接码应为 6 位数字'; return; }
+    errBox.textContent = '';
+    var match = DEVICES.filter(function (d) { return d.id === device; })[0];
+    startConnection(match ? match.name : '远端设备', match ? match.id : device, code);
+  });
+
+  $('#cancelConnect').addEventListener('click', cancelConnection);
+  $('#sessionBack').addEventListener('click', function () { exitSession(); });
+  $('#ctrlDisconnect').addEventListener('click', askDisconnect);
+  $('#sessionInfo').addEventListener('click', sessionInfoSheet);
+  $('#ctrlFiles').addEventListener('click', filesSheet);
+  $('#msgCopyAll').addEventListener('click', copyAllMessages);
+  $('#msgExport').addEventListener('click', exportMessages);
+  $('#ctrlKeyboard').addEventListener('click', function () { toast('键盘输入由会话输入通道处理（原型未接入）'); });
+  $('#ctrlQuality').addEventListener('click', qualitySheet);
+  $('#exitSessionBtn').addEventListener('click', function () { exitSession(); });
+
+  $('#markAllRead').addEventListener('click', function () {
+    if (state.auth === 'out') { toast('请先登录'); return; }
+    MESSAGES.forEach(function (m) { m.unread = false; });
+    state.readUntilText = '今天 21:06';
+    renderMessages();
+    toast('已全部标记为已读（mark_all_read）');
+  });
+
+  $('#openBind').addEventListener('click', bindSheet);
+  $('#emptyBind').addEventListener('click', bindSheet);
+  $('#openSettings').addEventListener('click', settingsSheet);
+  $('#logoutRow').addEventListener('click', logoutSheet);
+  $('#emptyLogin').addEventListener('click', function () { setAuth('out'); setTab('account'); state.pageStates.mine = 'normal'; applyAuth(); });
+  $('#failedRelogin').addEventListener('click', function () { setAuth('out'); state.pageStates.mine = 'normal'; applyAuth(); });
+  $('#copyAccount').addEventListener('click', function () { copyText(ACCOUNT.id); });
+  $('#accountDetailRow').addEventListener('click', function () { /* 已在我的页 */ });
+
+  $('#authSubmit').addEventListener('click', function () {
+    var acc = $('#authAccount').value.trim();
+    var pwd = $('#authPassword').value;
+    var err = $('#authError');
+    if (!acc) { err.textContent = '请输入账号'; return; }
+    if (!pwd) { err.textContent = '请输入口令'; return; }
+    if (state.authTab === 'register') {
+      var confirm = $('#authConfirm').value;
+      if (!confirm) { err.textContent = '请再次输入口令'; return; }
+      if (confirm !== pwd) { err.textContent = '两次输入的口令不一致'; return; }
+    }
+    err.textContent = '';
+    setAuth('in');
+    state.pageStates.mine = 'normal';
+    applyAuth();
+    toast(state.authTab === 'register' ? '已注册并登录（register_account → login_account）' : '已登录（login_account）');
+  });
+
+  $$('#trustedRefresh, #emptyRefresh').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (state.auth === 'out') { toast('请先登录'); return; }
+      setPageState('connect', 'normal');
+      toast('已刷新受信设备（list_devices）');
+    });
+  });
+
+  /* ---------------- 沉浸会话：浮条 + 适应屏幕起步的双指缩放与平移 ---------------- */
+  var floatState = { timer: 0, bound: false };
+
+  function stageEl() { return $('#sessionLayer .s-stage'); }
+
+  /* 默认「适应屏幕」：zoom=1 表示 fitScale，不是 1:1 原始像素；最大放大到 4 倍相对倍率；双指捏合缩放、双指拖动平移；单指始终是鼠标操作 */
+  var PAN = { x: 0, y: 0, pointers: {}, tapX: 0, tapY: 0, moved: false };
+  var SOURCE_W = 1920;
+  var SOURCE_H = 1080;
+  var MAX_ZOOM = 4;
+  var VIEW = { zoom: 1, scale: 1, fit: 0.2, min: 0.2 };
+  var gesture = { prevDist: 0, prevMid: null };
+  var tapTimer = 0;
+  var lastTap = { at: 0, x: 0, y: 0 };
+
+  function scaledWidth() { return Math.round(SOURCE_W * VIEW.scale); }
+  function scaledHeight() { return Math.round(SOURCE_H * VIEW.scale); }
+
+  /* 适应屏幕比例：min(可视宽/远端宽, 可视高/远端高)，随可用区尺寸变化 */
+  function fitScale() {
+    var stage = stageEl();
+    if (!stage || !stage.clientWidth || !stage.clientHeight) return VIEW.fit || 0.2;
+    return Math.min(stage.clientWidth / SOURCE_W, stage.clientHeight / SOURCE_H);
+  }
+
+  function clampPan() {
+    var stage = stageEl();
+    if (!stage) return;
+    var boxW = stage.clientWidth;
+    var boxH = stage.clientHeight;
+    var w = scaledWidth();
+    var h = scaledHeight();
+    if (w <= boxW) PAN.x = Math.round((boxW - w) / 2);
+    else PAN.x = Math.min(0, Math.max(boxW - w, PAN.x));
+    if (h <= boxH) PAN.y = Math.round((boxH - h) / 2);
+    else PAN.y = Math.min(0, Math.max(boxH - h, PAN.y));
+  }
+
+  function applyPan() {
+    var canvas = $('#sCanvas');
+    if (!canvas) return;
+    /* 画布保持远端原始宽高，用 transform 缩放，画面内容随倍率一起放大 */
+    canvas.style.width = SOURCE_W + 'px';
+    canvas.style.height = SOURCE_H + 'px';
+    canvas.style.transformOrigin = '0 0';
+    canvas.style.transform = 'scale(' + VIEW.scale + ')';
+    canvas.style.left = Math.round(PAN.x) + 'px';
+    canvas.style.top = Math.round(PAN.y) + 'px';
+    var label = $('#zoomLabel');
+    if (label) {
+      label.textContent = Math.abs(VIEW.zoom - 1) < 0.005
+        ? '适应屏幕'
+        : VIEW.zoom.toFixed(1) + '×';
+    }
+    var fitText = $('#fitScaleText');
+    if (fitText) fitText.textContent = '绝对倍率 ' + VIEW.fit.toFixed(3) + '×（占原始像素 ' + Math.round(VIEW.fit * 100) + '%）';
+    var relText = $('#relZoomText');
+    if (relText) relText.textContent = Math.abs(VIEW.zoom - 1) < 0.005 ? '适应屏幕（1.0×）' : VIEW.zoom.toFixed(1) + '×';
+    var panText = $('#panText');
+    if (panText) {
+      var stage = stageEl();
+      var canPan = stage && (scaledWidth() > stage.clientWidth + 1 || scaledHeight() > stage.clientHeight + 1);
+      panText.textContent = canPan ? '可平移 · 边界钳制' : '居中 / 不露黑边';
+    }
+  }
+
+  function layoutCanvas(center) {
+    var stage = stageEl();
+    if (!stage) return;
+    VIEW.fit = fitScale();
+    VIEW.min = VIEW.fit;
+    var rel = (VIEW.zoom === null || isNaN(VIEW.zoom)) ? 1 : VIEW.zoom;
+    VIEW.zoom = Math.min(MAX_ZOOM, Math.max(1, rel));
+    VIEW.scale = VIEW.fit * VIEW.zoom;
+    if (center) {
+      PAN.x = Math.round((stage.clientWidth - scaledWidth()) / 2);
+      PAN.y = Math.round((stage.clientHeight - scaledHeight()) / 2);
+    }
+    clampPan();
+    applyPan();
+  }
+
+  /* 还原：回到「适应屏幕」（相对 1.0×），不是 1:1 原始像素 */
+  function resetView() {
+    VIEW.zoom = 1;
+    layoutCanvas(true);
+  }
+
+  /* 适应屏幕：缩到完整可见并居中 */
+  function fitView() {
+    VIEW.zoom = 1;
+    layoutCanvas(true);
+  }
+
+  /* 回到左上角：放大后把平移复位到内容左上角，边界仍按可见区域钳制 */
+  function panTopLeft() {
+    PAN.x = 0;
+    PAN.y = 0;
+    clampPan();
+    applyPan();
+  }
+
+  /* 以双指中心为锚点缩放：锚点下的远端像素保持在原位置 */
+  function zoomAt(clientX, clientY, factor) {
+    var stage = stageEl();
+    if (!stage) return;
+    var rect = stage.getBoundingClientRect();
+    var px = clientX - rect.left;
+    var py = clientY - rect.top;
+    var oldRel = VIEW.zoom;
+    var nextRel = Math.min(MAX_ZOOM, Math.max(1, oldRel * factor));
+    if (!oldRel || nextRel === oldRel) return;
+    var ratio = nextRel / oldRel;
+    VIEW.zoom = nextRel;
+    VIEW.scale = VIEW.fit * nextRel;
+    PAN.x = px - (px - PAN.x) * ratio;
+    PAN.y = py - (py - PAN.y) * ratio;
+    clampPan();
+    applyPan();
+  }
+
+  function showFloat() {
+    $('#sessionLayer').classList.add('float-on');
+    clearTimeout(floatState.timer);
+    floatState.timer = setTimeout(function () { $('#sessionLayer').classList.remove('float-on'); }, 3000);
+  }
+
+  function pairMid(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  function tapMarker(localX, localY) {
+    var stage = stageEl();
+    var mark = document.createElement('span');
+    mark.className = 'tap-mark';
+    mark.style.left = localX + 'px';
+    mark.style.top = localY + 'px';
+    stage.appendChild(mark);
+    setTimeout(function () { if (mark.parentNode) mark.parentNode.removeChild(mark); }, 600);
+  }
+
+  /* 单指点击 = 鼠标点击：按当前缩放比例与平移偏移换算到远端像素 */
+  function remotePoint(clientX, clientY) {
+    var stage = stageEl();
+    var rect = stage.getBoundingClientRect();
+    var localX = clientX - rect.left;
+    var localY = clientY - rect.top;
+    var remoteX = Math.max(0, Math.min(SOURCE_W - 1, Math.round((localX - PAN.x) / VIEW.scale)));
+    var remoteY = Math.max(0, Math.min(SOURCE_H - 1, Math.round((localY - PAN.y) / VIEW.scale)));
+    return { localX: localX, localY: localY, remoteX: remoteX, remoteY: remoteY };
+  }
+
+  function tapAt(clientX, clientY) {
+    if ($('#sOverlay').classList.contains('open')) return;
+    var p = remotePoint(clientX, clientY);
+    tapMarker(p.localX, p.localY);
+    showFloat();
+    toast('已发送点击（' + p.remoteX + '，' + p.remoteY + '）');
+  }
+
+  function bindStagePan() {
+    var el = stageEl();
+    if (!el || floatState.bound) return;
+    floatState.bound = true;
+
+    el.addEventListener('pointerdown', function (e) {
+      if (state.session === 'none') return;
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件无捕获权，忽略 */ }
+      PAN.pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+      var pts = Object.keys(PAN.pointers).map(function (k) { return PAN.pointers[k]; });
+      if (pts.length === 1) {
+        PAN.tapX = e.clientX;
+        PAN.tapY = e.clientY;
+        PAN.moved = false;
+      } else if (pts.length === 2) {
+        PAN.moved = true;
+        gesture.prevMid = pairMid(pts[0], pts[1]);
+        gesture.prevDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      }
+    });
+
+    el.addEventListener('pointermove', function (e) {
+      if (!PAN.pointers[e.pointerId]) return;
+      PAN.pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+      var pts = Object.keys(PAN.pointers).map(function (k) { return PAN.pointers[k]; });
+      if (pts.length === 2) {
+        var mid = pairMid(pts[0], pts[1]);
+        var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (gesture.prevDist > 0) {
+          /* 先按中点位移平移，再以新中点为锚点缩放，保证双指下的远端像素跟手 */
+          PAN.x += mid.x - gesture.prevMid.x;
+          PAN.y += mid.y - gesture.prevMid.y;
+          var factor = dist / gesture.prevDist;
+          /* 指间距几乎不变时视为纯拖动，避免平移时倍率漂移 */
+          if (Math.abs(factor - 1) > 0.012) zoomAt(mid.x, mid.y, factor);
+          clampPan();
+          applyPan();
+        }
+        gesture.prevDist = dist;
+        gesture.prevMid = mid;
+        return;
+      }
+      if (pts.length === 1 && Math.abs(e.clientX - PAN.tapX) + Math.abs(e.clientY - PAN.tapY) > 8) {
+        PAN.moved = true;
+      }
+    });
+
+    function endPointer(e) {
+      if (!PAN.pointers[e.pointerId]) return;
+      delete PAN.pointers[e.pointerId];
+      if (Object.keys(PAN.pointers).length < 2) {
+        gesture.prevDist = 0;
+        gesture.prevMid = null;
+      }
+      if (Object.keys(PAN.pointers).length > 0 || PAN.moved) return;
+
+      /* 单指：300ms 内同位置第二次抬起 = 双击还原为适应屏幕；否则 240ms 后发送一次点击 */
+      var now = Date.now();
+      var isDouble = now - lastTap.at < 300 &&
+        Math.abs(e.clientX - lastTap.x) < 24 && Math.abs(e.clientY - lastTap.y) < 24;
+      lastTap = { at: now, x: e.clientX, y: e.clientY };
+      if (isDouble) {
+        clearTimeout(tapTimer);
+        tapTimer = 0;
+        lastTap = { at: 0, x: 0, y: 0 };
+        resetView();
+        showFloat();
+        toast('已还原为适应屏幕');
+        return;
+      }
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(function () {
+        tapTimer = 0;
+        tapAt(e.clientX, e.clientY);
+      }, 240);
+    }
+
+    el.addEventListener('pointerup', endPointer);
+    el.addEventListener('pointercancel', function (e) {
+      delete PAN.pointers[e.pointerId];
+      gesture.prevDist = 0;
+      gesture.prevMid = null;
+    });
+  }
+
+  window.addEventListener('resize', function () {
+    if (state.session !== 'none') layoutCanvas(false);
+  });
+
+  /* 浮条：还原（适应屏幕）/ 回到左上角 */
+  $('#panReset').addEventListener('click', function () {
+    resetView();
+    showFloat();
+    toast('已还原为适应屏幕');
+  });
+
+  $('#panTop').addEventListener('click', function () {
+    panTopLeft();
+    showFloat();
+    toast('已回到左上角');
+  });
+
+  /* 源画面方向：只改变远端宽高与适配比例，不旋转源画面 */
+  function setRelativeZoom(rel) {
+    VIEW.zoom = Math.min(MAX_ZOOM, Math.max(1, rel));
+    layoutCanvas(true);
+    $$('#zoomChips [data-zoom]').forEach(function (b) {
+      b.classList.toggle('active', Number(b.dataset.zoom) === VIEW.zoom);
+    });
+  }
+
+  function setSource(w, h) {
+    SOURCE_W = w;
+    SOURCE_H = h;
+    var grid = $('#frameGridSize');
+    var center = $('#frameCenterSize');
+    if (grid) grid.textContent = w + '×' + h;
+    if (center) center.textContent = '演示占位 · ' + w + '×' + h + ' · 原始比例';
+    VIEW.zoom = 1;
+    requestAnimationFrame(function () { requestAnimationFrame(function () { layoutCanvas(true); }); });
+  }
+
+  $$('#sourceChips [data-source]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      $$('#sourceChips [data-source]').forEach(function (b) { b.classList.toggle('active', b === btn); });
+      if (btn.dataset.source === 'portrait') {
+        setSource(1080, 1920);
+        toast('已切换为竖屏源，按竖向原始比例适配');
+      } else {
+        setSource(1920, 1080);
+        toast('已切换为横屏源，按横向原始比例适配');
+      }
+      $$('#zoomChips [data-zoom]').forEach(function (b) { b.classList.toggle('active', b.dataset.zoom === '1'); });
+    });
+  });
+
+  $$('#zoomChips [data-zoom]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      setRelativeZoom(Number(btn.dataset.zoom));
+      showFloat();
+      toast(btn.dataset.zoom === '1' ? '已回到适应屏幕' : '已放大到 ' + btn.dataset.zoom + ' 倍相对倍率');
+    });
+  });
+
+  /* ---------------- 右键与长按 ---------------- */
+  document.addEventListener('contextmenu', function (e) {
+    if (!menuFor(menuTargetOf(e.target), e.clientX, e.clientY)) return;
+    e.preventDefault();
+  });
+
+  var pressTimer = null;
+  var pressOrigin = null;
+
+  function clearPress() {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = null;
+    pressOrigin = null;
+  }
+
+  document.addEventListener('pointerdown', function (e) {
+    if (e.pointerType === 'mouse') return;
+    var target = menuTargetOf(e.target);
+    if (!target) return;
+    pressOrigin = { x: e.clientX, y: e.clientY };
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(function () {
+      pressTimer = null;
+      if (pressOrigin) menuFor(target, pressOrigin.x, pressOrigin.y);
+    }, 520);
+  });
+
+  document.addEventListener('pointermove', function (e) {
+    if (!pressTimer || !pressOrigin) return;
+    if (Math.abs(e.clientX - pressOrigin.x) > 8 || Math.abs(e.clientY - pressOrigin.y) > 8) clearPress();
+  });
+
+  ['pointerup', 'pointercancel', 'touchend', 'touchcancel'].forEach(function (name) {
+    document.addEventListener(name, clearPress);
+  });
+
+  window.addEventListener('scroll', clearPress, true);
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeCtxMenu(); closeSheet(); }
+  });
+
+  /* ---------------- 启动 ---------------- */
+  $('#inDeviceCode').value = 'KKKKLLLLMMMMNNNNOOOO';
+  $('#inAccessCode').value = '318204';
+  readHash();
+  setTheme(state.theme);
+  setAuth(state.auth);
+  renderAll();
+  setTab(state.tab);
+  if (state.session !== 'none') showSessionMode(state.session);
+  bindStagePan();
+  updateHash();
+})();
+</script>
+</body>
+</html>

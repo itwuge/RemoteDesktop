@@ -60,14 +60,27 @@ def data_dir() -> Path:
     return Path.home() / ".local" / "share" / "rdc"
 
 
+def config_path() -> Path:
+    """本地配置文件路径; 与启动时读取的是同一份."""
+    return data_dir() / CONFIG_FILE_NAME
+
+
 def load_config() -> dict[str, Any]:
     """读取本地 JSON 配置; 文件缺失或损坏返回空配置, 不阻塞启动."""
-    path = data_dir() / CONFIG_FILE_NAME
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def save_config(config: dict[str, Any]) -> None:
+    """原子写入本地配置; 目录不可写时抛 OSError 交给调用方呈现原因."""
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def bootstrap_runtime() -> dict[str, Any]:

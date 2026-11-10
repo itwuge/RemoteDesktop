@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lucide 图标 (ISC): shield -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M20,13 C20,18 16.5,20.5 12.34,21.95 A1,1 0 0,1 11.67,21.94 C7.5,20.5 4,18 4,13 L4,6 A1,1 0 0,1 5,5 C7,5 9.5,3.8 11.24,2.28 A1.17,1.17 0 0,1 12.76,2.28 C14.51,3.81 17,5 19,5 A1,1 0 0,1 20,6 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.8" />
+</vector>

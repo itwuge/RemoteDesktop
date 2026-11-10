@@ -32,7 +32,8 @@ from PySide6.QtWidgets import (
 from rdc.commands import update as update_commands
 from rdc.core.result import CommandResult
 from rdc.ui import icons
-from rdc.ui.components import chip
+from rdc.ui.components import CopyButton, chip
+from rdc.ui.copy import error_text, message_text
 from rdc.ui.theme import active
 from rdc.update.service import UpdateService
 
@@ -84,7 +85,7 @@ class UpdatePanel(QDialog):
         header.addWidget(self.kind_chip)
         layout.addLayout(header)
 
-        subtitle = QLabel("启动时静默检查, 失败不阻塞启动; 下载完成后必须通过 SHA-256 校验, 校验失败拒绝安装.")
+        subtitle = QLabel("启动时静默检查, 失败不阻塞启动; 下载完成后必须通过完整性校验（SHA-256）, 校验失败拒绝安装.")
         subtitle.setObjectName("pageSub")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -133,6 +134,10 @@ class UpdatePanel(QDialog):
         self.verify_text.setObjectName("muted")
         self.verify_text.setWordWrap(True)
         verify_row.addWidget(self.verify_text, 1)
+        self.digest_copy = CopyButton("", "复制完整性摘要（SHA-256）")
+        self.package_copy = CopyButton("", "复制安装包路径")
+        verify_row.addWidget(self.digest_copy)
+        verify_row.addWidget(self.package_copy)
         progress_layout.addLayout(verify_row)
         layout.addWidget(progress_box)
 
@@ -182,9 +187,11 @@ class UpdatePanel(QDialog):
         self.notes_view.setPlainText("")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_text.setText("未开始下载")
+        self.progress_text.setText("尚未开始下载")
         self._set_chip(self.verify_chip, "未校验")
         self.verify_text.setText("-")
+        self.digest_copy.set_value("")
+        self.package_copy.set_value("")
         self.hint_label.setText(DEFAULT_HINT)
         self.download_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
@@ -211,10 +218,10 @@ class UpdatePanel(QDialog):
         data = result.data or {}
         if not result.ok:
             self.latest_label.setText("-")
-            self.notes_view.setPlainText(result.message)
+            self.notes_view.setPlainText(error_text(result.error_code, result.message))
             self._set_chip(self.kind_chip, "检查失败", "danger")
             self.hint_label.setText("检查更新失败, 不影响本地使用, 可稍后重试.")
-            self.verify_text.setText(result.error_code or "-")
+            self.verify_text.setText(error_text(result.error_code, result.message))
             return
 
         current = str(data.get("current_version", "-"))
@@ -243,15 +250,15 @@ class UpdatePanel(QDialog):
     def _on_download(self) -> None:
         result = update_commands.start_update_download()
         if not result.ok:
-            self.hint_label.setText(result.message)
+            self.hint_label.setText(error_text(result.error_code, result.message))
             return
         data = result.data or {}
         self._task_id = str(data.get("task_id", ""))
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_text.setText("0 / 0 字节")
+        self.progress_text.setText("尚未开始下载")
         self._set_chip(self.verify_chip, "下载中", "accent")
-        self.verify_text.setText("下载完成后自动计算 SHA-256")
+        self.verify_text.setText("下载完成后自动计算完整性摘要（SHA-256）")
         self.hint_label.setText(result.message)
         self.download_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
@@ -273,14 +280,16 @@ class UpdatePanel(QDialog):
             self._set_chip(self.verify_chip, "校验通过", "ok")
             digest = str(data.get("sha256", ""))
             package = str(data.get("package_path", ""))
-            self.verify_text.setText(f"SHA-256 {digest}\n安装包: {package}")
-            self.hint_label.setText("更新包已通过 SHA-256 校验, 可以安装; 本轮不自动执行安装.")
+            self.verify_text.setText(f"完整性摘要（SHA-256）{digest}\n安装包路径 {package}")
+            self.digest_copy.set_value(digest, "复制完整性摘要（SHA-256）")
+            self.package_copy.set_value(package, "复制安装包路径")
+            self.hint_label.setText("更新包已通过完整性校验, 可以安装; 本轮不自动执行安装.")
         elif status == "failed":
             self._timer.stop()
             self.cancel_button.setEnabled(False)
             self._set_chip(self.verify_chip, "校验失败", "danger")
-            self.verify_text.setText(result.error_code or result.message)
-            self.hint_label.setText(f"已拒绝安装: {result.message}")
+            self.verify_text.setText(error_text(result.error_code, result.message))
+            self.hint_label.setText(error_text(result.error_code, result.message))
         elif status == "canceled":
             self._timer.stop()
             self.cancel_button.setEnabled(False)
@@ -294,14 +303,14 @@ class UpdatePanel(QDialog):
         if not self._task_id:
             return
         result = update_commands.cancel_update_download(self._task_id)
-        self.hint_label.setText(result.message)
+        self.hint_label.setText(message_text(result.error_code, result.message, ok=result.ok))
         self._poll_progress()
 
     def _set_progress(self, completed: int, total: int) -> None:
         if total > 0:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(min(100, int(completed * 100 / total)))
-            self.progress_text.setText(f"{completed} / {total} 字节")
+            self.progress_text.setText(f"已下载 {completed} 字节 / 共 {total} 字节")
         else:
             self.progress_bar.setRange(0, 0)
             self.progress_text.setText(f"已下载 {completed} 字节")

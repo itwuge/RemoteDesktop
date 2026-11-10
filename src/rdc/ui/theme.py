@@ -12,34 +12,36 @@
 from __future__ import annotations
 
 DARK = {
-    "bg": "#070b12",
-    "bg_2": "#0a1018",
-    "panel": "#0c131d",
-    "panel_2": "#101925",
-    "card": "#111b27",
-    "card_hover": "#16222f",
-    "line": "#1e2b3b",
-    "line_strong": "#2b3c50",
-    "text": "#e9eff8",
-    "muted": "#9aa9bd",
-    "faint": "#66768c",
+    # 与 docs/design/ui-v1/design-tokens.json 的 colors.shared.dark 一一对应
+    "bg": "#0b0e13",
+    "bg_2": "#1a212b",
+    "panel": "#121820",
+    "panel_2": "#0f141b",
+    "card": "#141a23",
+    "card_hover": "#1a212b",
+    "line": "#222b37",
+    "line_strong": "#2e3947",
+    "text": "#e7edf6",
+    "muted": "#8b98aa",
+    "faint": "#5e6b7d",
     "accent": "#4d8dff",
-    "accent_2": "#7aaeff",
-    "accent_soft": "rgba(77, 141, 255, 0.16)",
+    "accent_2": "#679eff",
+    "accent_strong": "#9dc0ff",
+    "accent_soft": "rgba(77, 141, 255, 0.14)",
     "accent_soft_2": "rgba(77, 141, 255, 0.07)",
     "accent_border": "rgba(77, 141, 255, 0.34)",
     "accent_border_soft": "rgba(77, 141, 255, 0.22)",
-    "ok": "#37d39a",
-    "ok_soft": "rgba(55, 211, 154, 0.12)",
-    "ok_border": "rgba(55, 211, 154, 0.34)",
-    "warn": "#f0b45e",
-    "warn_soft": "rgba(240, 180, 94, 0.12)",
-    "warn_border": "rgba(240, 180, 94, 0.34)",
-    "danger": "#ff7676",
-    "danger_soft": "rgba(255, 118, 118, 0.12)",
-    "danger_border": "rgba(255, 118, 118, 0.34)",
-    "input": "#0a1119",
-    "hover": "#172333",
+    "ok": "#3fc996",
+    "ok_soft": "rgba(63, 201, 150, 0.12)",
+    "ok_border": "rgba(63, 201, 150, 0.32)",
+    "warn": "#e0a955",
+    "warn_soft": "rgba(224, 169, 85, 0.13)",
+    "warn_border": "rgba(224, 169, 85, 0.32)",
+    "danger": "#ea6a6a",
+    "danger_soft": "rgba(234, 106, 106, 0.12)",
+    "danger_border": "rgba(234, 106, 106, 0.32)",
+    "input": "#0e131a",
+    "hover": "#1a222d",
     "hero_from": "#16325a",
     "hero_to": "#0d1725",
     "thumb_from": "#1b2c42",
@@ -49,34 +51,36 @@ DARK = {
 }
 
 LIGHT = {
-    "bg": "#eef2f7",
-    "bg_2": "#e8edf4",
+    # 与 docs/design/ui-v1/design-tokens.json 的 colors.shared.light 一一对应
+    "bg": "#eef1f6",
+    "bg_2": "#eef2f7",
     "panel": "#ffffff",
-    "panel_2": "#f5f8fc",
+    "panel_2": "#f5f7fa",
     "card": "#ffffff",
-    "card_hover": "#f7faff",
-    "line": "#e0e7f0",
-    "line_strong": "#c9d4e2",
-    "text": "#17202b",
-    "muted": "#4a5b70",
-    "faint": "#5f6d7e",
+    "card_hover": "#eef2f7",
+    "line": "#dfe5ed",
+    "line_strong": "#cbd4df",
+    "text": "#1d2733",
+    "muted": "#5f6d7e",
+    "faint": "#8c98a6",
     "accent": "#2f6fe0",
-    "accent_2": "#1f5ecb",
-    "accent_soft": "rgba(47, 111, 224, 0.12)",
+    "accent_2": "#245fc8",
+    "accent_strong": "#1f57b8",
+    "accent_soft": "rgba(47, 111, 224, 0.10)",
     "accent_soft_2": "rgba(47, 111, 224, 0.06)",
     "accent_border": "rgba(47, 111, 224, 0.34)",
     "accent_border_soft": "rgba(47, 111, 224, 0.22)",
-    "ok": "#128a62",
-    "ok_soft": "rgba(18, 138, 98, 0.10)",
-    "ok_border": "rgba(18, 138, 98, 0.30)",
-    "warn": "#9a640f",
-    "warn_soft": "rgba(154, 100, 15, 0.10)",
-    "warn_border": "rgba(154, 100, 15, 0.30)",
-    "danger": "#c54343",
-    "danger_soft": "rgba(197, 67, 67, 0.10)",
-    "danger_border": "rgba(197, 67, 67, 0.30)",
+    "ok": "#16865f",
+    "ok_soft": "rgba(22, 134, 95, 0.10)",
+    "ok_border": "rgba(22, 134, 95, 0.28)",
+    "warn": "#a76b12",
+    "warn_soft": "rgba(167, 107, 18, 0.10)",
+    "warn_border": "rgba(167, 107, 18, 0.28)",
+    "danger": "#c54545",
+    "danger_soft": "rgba(197, 69, 69, 0.09)",
+    "danger_border": "rgba(197, 69, 69, 0.28)",
     "input": "#fbfcfe",
-    "hover": "#eef3fa",
+    "hover": "#eef2f8",
     "hero_from": "#dbe8ff",
     "hero_to": "#f2f6fd",
     "thumb_from": "#dce6f4",
@@ -86,6 +90,16 @@ LIGHT = {
 }
 
 _ACTIVE = DARK
+
+# 品牌标记与应用程序图标的固定色; 两端主题共用, 不随深浅色变化
+BRAND_MARK = {"from": "#5b97ff", "to": "#2f63d8"}
+APP_ICON = {
+    "plate_top": "#6fa8ff",
+    "plate_bottom": "#3b7bf6",
+    "plate_edge": "#1f55cc",
+    "mark_deep": "#1b4099",
+    "glyph": "#ffffff",
+}
 
 
 def active() -> dict[str, str]:
@@ -112,38 +126,73 @@ QToolTip {{
     border-radius: 6px;
     padding: 5px 8px;
 }}
+QMenu {{
+    background: {token["panel_2"]};
+    color: {token["text"]};
+    border: 1px solid {token["line_strong"]};
+    border-radius: 8px;
+    padding: 5px;
+}}
+QMenu::item {{
+    padding: 6px 22px 6px 12px;
+    border-radius: 6px;
+    background: transparent;
+}}
+QMenu::item:selected {{ background: {token["accent_soft"]}; color: {token["text"]}; }}
+QMenu::item:disabled {{ color: {token["faint"]}; }}
+QMenu::separator {{
+    height: 1px;
+    background: {token["line"]};
+    margin: 5px 8px;
+}}
+QPushButton#copyBtn {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0;
+}}
+QPushButton#copyBtn:hover {{ background: {token["hover"]}; border-color: {token["line_strong"]}; }}
+QPushButton#copyBtn:disabled {{ background: transparent; border-color: transparent; }}
+QLabel#toast {{
+    background: {token["panel_2"]};
+    color: {token["text"]};
+    border: 1px solid {token["line_strong"]};
+    border-radius: 8px;
+    padding: 7px 16px;
+    font-size: 12px;
+}}
 
 /* ---------------------------------------------------------------- 侧栏 */
 QFrame#sidebar {{
-    background: {token["panel"]};
+    background: {token["panel_2"]};
     border-right: 1px solid {token["line"]};
 }}
-QLabel#brand {{ font-size: 16px; font-weight: 700; letter-spacing: 0.2px; }}
-QLabel#brandSub {{ color: {token["muted"]}; font-size: 11px; }}
+QLabel#brand {{ font-size: 12.5px; font-weight: 700; letter-spacing: 0.1px; }}
+QLabel#brandSub {{ color: {token["faint"]}; font-size: 10px; letter-spacing: 0.4px; }}
 QLabel#navSection {{
     color: {token["faint"]};
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 600;
-    letter-spacing: 1.6px;
+    letter-spacing: 1.33px;
 }}
-QLabel#sidebarFoot {{ color: {token["faint"]}; font-size: 11px; }}
+QLabel#sidebarFoot {{ color: {token["faint"]}; font-size: 10px; }}
 
 /* ---------------------------------------------------------------- 文字阶梯 */
-QLabel#pageTitle {{ font-size: 24px; font-weight: 700; }}
-QLabel#pageSub {{ color: {token["muted"]}; font-size: 12px; }}
+QLabel#pageTitle {{ font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }}
+QLabel#pageSub {{ color: {token["muted"]}; font-size: 11.5px; }}
 QLabel#eyebrow {{
     color: {token["accent"]};
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 700;
-    letter-spacing: 1.8px;
+    letter-spacing: 1.52px;
 }}
-QLabel#sectionTitle {{ font-size: 14px; font-weight: 600; }}
-QLabel#sectionSub {{ color: {token["muted"]}; font-size: 12px; }}
-QLabel#cardTitle {{ font-size: 13px; font-weight: 600; }}
-QLabel#cardMeta {{ color: {token["muted"]}; font-size: 11px; }}
-QLabel#emptyTitle {{ font-size: 16px; font-weight: 600; }}
-QLabel#emptyDesc {{ color: {token["muted"]}; font-size: 12px; }}
-QLabel#metricValue {{ font-size: 22px; font-weight: 700; }}
+QLabel#sectionTitle {{ font-size: 13px; font-weight: 600; }}
+QLabel#sectionSub {{ color: {token["muted"]}; font-size: 11.5px; }}
+QLabel#cardTitle {{ font-size: 12.5px; font-weight: 600; }}
+QLabel#cardMeta {{ color: {token["muted"]}; font-size: 10.5px; }}
+QLabel#emptyTitle {{ font-size: 15px; font-weight: 600; }}
+QLabel#emptyDesc {{ color: {token["muted"]}; font-size: 11.5px; }}
+QLabel#metricValue {{ font-size: 22px; font-weight: 600; letter-spacing: -0.4px; }}
 QLabel#metricLabel {{ color: {token["muted"]}; font-size: 11px; }}
 QLabel#heroCode {{
     font-family: "Cascadia Mono", Consolas, monospace;
@@ -171,10 +220,10 @@ QLabel#badgeDanger {{ color: {token["danger"]}; }}
 QLabel#chip {{
     background: {token["panel_2"]};
     border: 1px solid {token["line"]};
-    border-radius: 9px;
-    padding: 3px 9px;
+    border-radius: 12px;
+    padding: 3px 10px;
     color: {token["muted"]};
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 600;
 }}
 QLabel#chip[tone="ok"] {{
@@ -202,7 +251,7 @@ QLabel#chip[tone="accent"] {{
 QFrame#card, QFrame#statCard {{
     background: {token["card"]};
     border: 1px solid {token["line"]};
-    border-radius: 14px;
+    border-radius: 13px;
 }}
 QFrame#statCard {{ border-radius: 12px; }}
 QFrame#hero {{
@@ -211,6 +260,48 @@ QFrame#hero {{
     border: 1px solid {token["accent_border"]};
     border-radius: 18px;
 }}
+/* 账号页: 登录与注册 */
+QFrame#authIntro {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 {token["accent_soft"]}, stop:0.7 {token["card"]});
+    border: 1px solid {token["line"]};
+    border-radius: 14px;
+}}
+QFrame#authCard {{
+    background: {token["card"]};
+    border: 1px solid {token["line"]};
+    border-radius: 14px;
+}}
+QFrame#authTabs {{
+    background: {token["panel_2"]};
+    border: 1px solid {token["line"]};
+    border-radius: 9px;
+}}
+QPushButton[authSeg="true"] {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: {token["muted"]};
+    font-size: 12px;
+    font-weight: 500;
+    padding: 0 12px;
+}}
+QPushButton[authSeg="true"]:hover {{ background: {token["hover"]}; color: {token["text"]}; }}
+QPushButton[authSeg="true"]:pressed {{ background: {token["accent_soft"]}; color: {token["text"]}; }}
+QPushButton[authSeg="true"]:checked {{
+    background: {token["bg_2"]};
+    border-color: {token["line"]};
+    color: {token["text"]};
+}}
+QPushButton[authSeg="true"]:disabled {{ background: transparent; border-color: transparent; color: {token["faint"]}; }}
+QLabel#authIntroText {{ color: {token["muted"]}; font-size: 11.5px; }}
+QLabel#authPoint {{ color: {token["muted"]}; font-size: 11px; }}
+QLabel#authFieldLabel {{ color: {token["muted"]}; font-size: 11px; }}
+QLabel#authFieldHint {{ color: {token["faint"]}; font-size: 10px; }}
+QLineEdit#authInput {{ min-height: 17px; }}
+QLabel#authNote {{ color: {token["faint"]}; font-size: 10px; }}
+QLabel#authStateWarn {{ color: {token["warn"]}; font-size: 10px; }}
+QLabel#authStateOk {{ color: {token["ok"]}; font-size: 10px; }}
 QFrame#heroPanel {{
     background: {token["accent_soft_2"]};
     border: 1px solid {token["accent_border_soft"]};
@@ -219,7 +310,7 @@ QFrame#heroPanel {{
 QFrame#deviceCard {{
     background: {token["card"]};
     border: 1px solid {token["line"]};
-    border-radius: 14px;
+    border-radius: 12px;
 }}
 QFrame#deviceCard:hover {{ border-color: {token["line_strong"]}; background: {token["card_hover"]}; }}
 QFrame#deviceCard[selected="true"] {{
@@ -234,7 +325,7 @@ QFrame#toolbar {{
 QFrame#statusStrip {{
     background: {token["panel_2"]};
     border: 1px solid {token["line"]};
-    border-radius: 12px;
+    border-radius: 11px;
 }}
 QFrame#wallSurface {{
     background: {token["panel_2"]};
@@ -265,9 +356,10 @@ QFrame#wallCell[focused="true"] {{ border: 2px solid {token["accent"]}; }}
 QPushButton {{
     background: {token["card"]};
     border: 1px solid {token["line_strong"]};
-    border-radius: 9px;
-    padding: 8px 14px;
+    border-radius: 8px;
+    padding: 5px 12px;
     min-height: 20px;
+    font-size: 12px;
     font-weight: 500;
 }}
 QPushButton:hover {{ background: {token["hover"]}; border-color: {token["accent_border"]}; }}
@@ -280,10 +372,11 @@ QPushButton:disabled {{
 QPushButton[primary="true"] {{
     background: {token["accent"]};
     border-color: {token["accent"]};
-    color: #ffffff;
+    color: {token["white"]};
     font-weight: 600;
 }}
 QPushButton[primary="true"]:hover {{ background: {token["accent_2"]}; border-color: {token["accent_2"]}; }}
+QPushButton[primary="true"]:pressed {{ background: {token["accent_2"]}; border-color: {token["accent_strong"]}; }}
 QPushButton[primary="true"]:disabled {{
     background: {token["line"]};
     border-color: {token["line"]};
@@ -297,11 +390,12 @@ QPushButton[ghost="true"]:hover {{ background: {token["hover"]}; border-color: {
 QPushButton[ghost="true"]:pressed {{ background: {token["accent_soft"]}; border-color: {token["accent_border"]}; }}
 QPushButton[nav="true"] {{
     text-align: left;
-    padding: 10px 12px;
+    padding: 8px 9px;
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: 7px;
     background: transparent;
     color: {token["muted"]};
+    font-size: 12.5px;
     font-weight: 500;
 }}
 QPushButton[nav="true"]:hover {{
@@ -310,8 +404,8 @@ QPushButton[nav="true"]:hover {{
 }}
 QPushButton[nav="true"]:checked {{
     background: {token["accent_soft"]};
-    border-color: {token["accent_border_soft"]};
-    color: {token["accent"]};
+    border-color: transparent;
+    color: {token["accent_strong"]};
     font-weight: 600;
 }}
 QPushButton[seg="true"] {{
@@ -332,7 +426,7 @@ QPushButton[seg="true"]:disabled {{
 QPushButton[seg="true"]:checked {{
     background: {token["accent"]};
     border-color: {token["accent"]};
-    color: #ffffff;
+    color: {token["white"]};
     font-weight: 600;
 }}
 QPushButton[link="true"] {{
@@ -357,7 +451,7 @@ QPushButton#logToggle {{
 QGroupBox {{
     background: {token["card"]};
     border: 1px solid {token["line"]};
-    border-radius: 14px;
+    border-radius: 13px;
     margin-top: 20px;
     padding: 16px;
     font-weight: 600;
@@ -375,9 +469,10 @@ QGroupBox QLabel {{ color: {token["muted"]}; font-size: 12px; }}
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
     background: {token["input"]};
     border: 1px solid {token["line_strong"]};
-    border-radius: 9px;
-    padding: 7px 10px;
-    min-height: 20px;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 18px;
+    font-size: 12px;
     selection-background-color: {token["accent"]};
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{

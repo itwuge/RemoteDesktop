@@ -120,7 +120,7 @@ def test_expired_device_token_rejected() -> None:
 
 
 def test_bind_and_list_devices() -> None:
-    """绑定设备后出现在设备列表, 默认免确认开启."""
+    """绑定设备后出现在设备列表, 默认需要逐次确认."""
     service = make_service()
     login(service, ACCOUNT_A)
     bound = service.bind_device(DEVICE_1, "123456")
@@ -128,7 +128,7 @@ def test_bind_and_list_devices() -> None:
     listed = service.list_devices()
     assert listed.ok
     item = listed.data["items"][0]
-    assert item["device_id"] == DEVICE_1 and item["require_confirm"] is False and item["owner"] is True
+    assert item["device_id"] == DEVICE_1 and item["require_confirm"] is True and item["owner"] is True
 
 
 def test_bind_requires_valid_access_code() -> None:
@@ -162,7 +162,7 @@ def test_unbind_kicks_sessions() -> None:
 
 
 def test_trust_policy_owner_only_and_audited() -> None:
-    """免确认开关仅所有者可改, 默认关闭确认, 变更进审计."""
+    """信任状态仅所有者可改, 默认需确认, 变更进审计."""
     service = make_service()
     login(service, ACCOUNT_A)
     service.bind_device(DEVICE_1, "123456")
@@ -184,19 +184,21 @@ def test_resolve_access_order() -> None:
 
     assert service.resolve_access(DEVICE_1, existing_session=session_token)["route"] == "existing_session"
     assert service.resolve_access(DEVICE_1, existing_session="forged-session")["route"] == "denied"
+    assert service.resolve_access(DEVICE_1)["route"] == "approval", "新绑定设备默认需确认"
+
+    service.set_trust_policy(DEVICE_1, False)
     assert service.resolve_access(DEVICE_1)["route"] == "passwordless"
 
     service.set_trust_policy(DEVICE_1, True)
-    assert service.resolve_access(DEVICE_1)["route"] == "approval"
-
-    service.set_trust_policy(DEVICE_1, False)
+    assert service.resolve_access(DEVICE_1)["route"] == "approval", "撤销信任后立即回到需确认"
 
 
 def test_passwordless_request_rejected() -> None:
-    """免确认生效时申请被明确拒绝, 不产生申请记录."""
+    """显式信任后申请被明确拒绝, 不产生申请记录."""
     service = make_service()
     login(service, ACCOUNT_A)
     service.bind_device(DEVICE_1, "123456")
+    assert service.set_trust_policy(DEVICE_1, False).ok
     result = service.request_access(DEVICE_1, "control", "临时看一眼")
     assert not result.ok and result.error_code == PERMISSION_DENIED
     assert not service.store.requests

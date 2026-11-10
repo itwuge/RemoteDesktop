@@ -9,15 +9,15 @@
 | 安装包 `rdc-desktop-0.2.1-windows-x64-setup.exe` | `%LOCALAPPDATA%\Programs\RDC 远程桌面`（即 `C:\Users\<用户名>\AppData\Local\Programs\RDC 远程桌面`） | 双击安装，向导第二页可改 |
 | 便携包 `rdc-desktop-0.2.1-windows-x64-portable.zip` | 解压后只有一个顶层文件夹 `RDC 远程桌面` | 右键「全部解压缩」，不把文件散到当前目录 |
 
-两者目录同名，因此**不能**解压到与安装版相同的父目录（会因同名触发合并/覆盖，把便携文件混进安装目录）。建议各用一个父目录并列：
+两者目录同名，直接解压到同一父目录会因同名触发合并/覆盖，把便携文件混进安装目录。想要两者并列，把便携目录改名即可（安装版位置不动）：
 
 ```
 %LOCALAPPDATA%\Programs\
-└─ RDC 远程桌面\          ← 安装版
-
-D:\Tools\
-└─ RDC 远程桌面\          ← 便携版
+├─ RDC 远程桌面\              ← 安装版
+└─ RDC 远程桌面-portable\     ← 便携版（解压后改名）
 ```
+
+或者在解压对话框里直接把目标目录改成另一个父目录，例如 `D:\Tools\RDC 远程桌面`。
 
 默认路径来自 [rdc-installer.nsi](file:///c:/Users/Administrator/Desktop/RemoteDesktop/packaging/windows/rdc-installer.nsi) 的 `InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"`。
 
@@ -83,7 +83,8 @@ RDC 远程桌面\
 | `UninstallString` | `$INSTDIR\Uninstall.exe` |
 | `NoModify` / `NoRepair` | 均为 1 |
 
-不写 App Paths，不写开机启动项，不注册系统服务。
+不写 App Paths，不注册系统服务。安装包本身不写开机启动项；程序首次启动时按「安装版默认开启」写入
+`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` 的 `RDC 远程桌面` 值，卸载时删除。
 
 ## 6. 卸载后的残留
 
@@ -91,6 +92,7 @@ RDC 远程桌面\
 
 - 删除安装目录整个 `$INSTDIR`（含 `_internal`、exe、图标、卸载器）
 - 删除 HKCU 卸载键 `...\Uninstall\RDC`
+- 删除 HKCU 开机自启值 `...\CurrentVersion\Run\RDC 远程桌面`（若存在）
 - 删除桌面与开始菜单快捷方式（含开始菜单目录本身）
 - **保留** `%LOCALAPPDATA%\RDC`（账号库、日志、崩溃日志）
 

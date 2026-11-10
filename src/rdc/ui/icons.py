@@ -18,7 +18,7 @@ from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixma
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QPushButton, QWidget
 
-from rdc.ui.theme import DARK, LIGHT, active
+from rdc.ui.theme import APP_ICON, DARK, LIGHT, active
 
 ASSET_DIR = Path(__file__).with_name("assets") / "icons"
 _CACHE: dict[tuple[str, str, int, float], QPixmap] = {}
@@ -144,8 +144,8 @@ def _is_light() -> bool:
 
 APP_SIZES = (16, 24, 32, 48, 64, 128, 256)
 """应用图标内置尺寸; 与 scripts/make_app_icon.py 导出的一致, 保证任务栏与资源管理器取到原尺寸."""
-PLATE_STOPS = ((0.0, "#6fa8ff"), (0.52, "#3b7bf6"), (1.0, "#1f55cc"))
-_MARK_DEEP = "#1b4099"
+PLATE_STOPS = ((0.0, APP_ICON["plate_top"]), (0.52, APP_ICON["plate_bottom"]), (1.0, APP_ICON["plate_edge"]))
+_MARK_DEEP = APP_ICON["mark_deep"]
 
 
 def _app_pen(color: str, width: float) -> QPen:
@@ -192,27 +192,35 @@ def _app_mark(painter: QPainter, size: float) -> None:
         stroke = size * 0.052
         radius = size * 0.062
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(_app_pen("#ffffff", stroke))
+        painter.setPen(_app_pen(APP_ICON["glyph"], stroke))
         painter.drawRoundedRect(QRectF(size * 0.196, size * 0.200, size * 0.608, size * 0.352), radius, radius)
         painter.drawLine(QPointF(size * 0.5, size * 0.552), QPointF(size * 0.5, size * 0.662))
         painter.drawLine(QPointF(size * 0.372, size * 0.681), QPointF(size * 0.628, size * 0.681))
         _app_arrow(
-            painter, QPointF(size * 0.312, size * 0.376), QPointF(size * 0.688, size * 0.376), size * 0.045, "#ffffff"
+            painter,
+            QPointF(size * 0.312, size * 0.376),
+            QPointF(size * 0.688, size * 0.376),
+            size * 0.045,
+            APP_ICON["glyph"],
         )
     elif size >= 28:
         stroke = size * 0.062
         radius = size * 0.080
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(_app_pen("#ffffff", stroke))
+        painter.setPen(_app_pen(APP_ICON["glyph"], stroke))
         painter.drawRoundedRect(QRectF(size * 0.152, size * 0.222, size * 0.696, size * 0.416), radius, radius)
         _app_arrow(
-            painter, QPointF(size * 0.292, size * 0.430), QPointF(size * 0.708, size * 0.430), size * 0.058, "#ffffff"
+            painter,
+            QPointF(size * 0.292, size * 0.430),
+            QPointF(size * 0.708, size * 0.430),
+            size * 0.058,
+            APP_ICON["glyph"],
         )
         painter.drawLine(QPointF(size * 0.5, size * 0.638), QPointF(size * 0.5, size * 0.726))
         painter.drawLine(QPointF(size * 0.392, size * 0.750), QPointF(size * 0.608, size * 0.750))
     else:
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#ffffff"))
+        painter.setBrush(QColor(APP_ICON["glyph"]))
         painter.drawRoundedRect(
             QRectF(size * 0.128, size * 0.196, size * 0.744, size * 0.436), size * 0.11, size * 0.11
         )

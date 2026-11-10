@@ -1,4 +1,4 @@
-"""会话数据面 9 类消息的校验与信令降级转发, 对应 protocol-v1 v1.3 3.1 节."""
+"""会话数据面 10 类消息的校验与信令降级转发, 对应 protocol-v1 v1.6 3.1 节."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ def _offer_payload(size: int = 10, chunk_size: int = 4, **overrides) -> dict:
         "total_bytes": size,
         "chunk_size": chunk_size,
         "digest_alg": "sha256",
+        "digest": "b" * 64,
     }
     payload.update(overrides)
     return payload
@@ -163,8 +164,52 @@ def test_file_abort_is_terminal_and_idempotent():
     tracker = _accepted_tracker()
     abort = {"session_id": SESSION, "transfer_id": TRANSFER, "reason": "用户取消"}
     assert tracker.check("file_abort", abort).ok
-    assert tracker.check("file_abort", abort).ok
     assert tracker.check("file_chunk", _chunk_payload()).code == FILE_CHUNK_INVALID
+
+
+def test_file_accept_resume_starts_from_received_point():
+    """file_accept 带回续传偏移后, 块必须从该偏移开始."""
+    tracker = SessionPlaneTracker()
+    assert tracker.check("file_offer", _offer_payload(size=10)).ok
+    resume = [{"relative": "a.txt", "received_bytes": 4}]
+    assert tracker.check("file_accept", _accept_payload(resume=resume)).ok
+    assert tracker.check("file_chunk", _chunk_payload(b"ef", 0)).code == FILE_CHUNK_INVALID
+    assert tracker.check("file_chunk", _chunk_payload(b"ef", 4)).ok
+
+
+def test_file_accept_rejects_invalid_resume():
+    tracker = SessionPlaneTracker()
+    assert tracker.check("file_offer", _offer_payload(size=10)).ok
+    too_far = [{"relative": "a.txt", "received_bytes": 11}]
+    assert tracker.check("file_accept", _accept_payload(resume=too_far)).code == FILE_OFFER_REJECTED
+    unknown = [{"relative": "b.txt", "received_bytes": 1}]
+    assert tracker.check("file_accept", _accept_payload(resume=unknown)).code == FILE_OFFER_REJECTED
+
+
+def test_file_result_confirms_or_fails_completed_transfer():
+    """file_result 只有完成之后才被接受; verified=true 与摘要一致后进入最终态."""
+    tracker = _accepted_tracker()
+    assert tracker.check("file_chunk", _chunk_payload(b"abcdefghij", 0)).ok
+    ack = {"session_id": SESSION, "transfer_id": TRANSFER, "file_index": 0, "acked_bytes": 10}
+    assert tracker.check("file_ack", ack).ok
+    complete = {"session_id": SESSION, "transfer_id": TRANSFER, "digest": "b" * 64}
+    assert tracker.check("file_complete", complete).ok
+    mismatch = {**complete, "verified": True, "digest": "c" * 64}
+    assert tracker.check("file_result", mismatch).code == TRANSFER_HASH_MISMATCH
+    result = {"session_id": SESSION, "transfer_id": TRANSFER, "verified": True, "digest": "b" * 64}
+    assert tracker.check("file_result", result).ok
+    assert tracker.check("file_result", result).suppress
+
+
+def test_file_result_failure_requires_error_code():
+    tracker = _accepted_tracker()
+    assert tracker.check("file_chunk", _chunk_payload(b"abcdefghij", 0)).ok
+    ack = {"session_id": SESSION, "transfer_id": TRANSFER, "file_index": 0, "acked_bytes": 10}
+    assert tracker.check("file_ack", ack).ok
+    assert tracker.check("file_complete", {**ack, "digest": "b" * 64}).ok
+    failed = {"session_id": SESSION, "transfer_id": TRANSFER, "verified": False, "digest": ""}
+    assert tracker.check("file_result", failed).code == TRANSFER_HASH_MISMATCH
+    assert tracker.check("file_result", {**failed, "error_code": "TRANSFER_HASH_MISMATCH"}).ok
 
 
 # --------------------------------------------------------------- 剪贴板语义

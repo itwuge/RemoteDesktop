@@ -44,5 +44,6 @@ def pull_clipboard(target: str) -> CommandResult:
 
 
 def get_clipboard_status() -> CommandResult:
-    """查看同步状态（不含内容明文）."""
+    """查看同步状态（不含内容明文）; 顺带消费通道消息, 刷新待确认与已确认状态."""
+    _service.poll_channel()
     return _service.status()

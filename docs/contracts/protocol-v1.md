@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 |---|---|
 | 契约名称 | 信令与中继线协议 |
-| 契约版本 | v1.4 |
+| 契约版本 | v1.6 |
 | 对应设计书 | 项目设计书-项目-202611-001-20261110 |
 | 冻结日期 | 2026-11-10 |
 | 批准人 | M03 架构师 |
@@ -71,12 +71,13 @@
 | display_update | 被控端 → 信令服务 → 控制端 | session_id、width、height、rotation | 无 | 方向与画面尺寸同步；rotation 取 0、90、180、270，表示远端画面顺时针旋转角度；控制端按此计算 Surface 重建与坐标映射 |
 | heartbeat | 双向 | session_id、seq | 无 | 保活与 RTT 采样；seq 单调递增 |
 | presence | 客户端 → 信令服务 | device_id、state | last_seen_at | 设备级在线心跳；30 秒一条，90 秒未收到判离线；只用于在线状态，不参与鉴权 |
-| file_offer | 发送端 → 接收端（会话数据面） | session_id、transfer_id、items、total_bytes、chunk_size、digest_alg | resume | 发起文件传输；items 每项含 relative、size、sha256；单次最多 4096 项，单文件不超过 4 GiB |
-| file_accept | 接收端 → 发送端（会话数据面） | session_id、transfer_id、accepted_items | resume | 接受传输；accepted_items 为 relative 列表；resume 每项含 relative、received_bytes |
+| file_offer | 发送端 → 接收端（会话数据面） | session_id、transfer_id、items、total_bytes、chunk_size、digest_alg、digest | resume | 发起文件传输；items 每项含 relative、size、sha256；digest 为整树摘要；单次最多 4096 项，单文件不超过 4 GiB |
+| file_accept | 接收端 → 发送端（会话数据面） | session_id、transfer_id、accepted_items | resume | 接受传输；accepted_items 为 relative 列表；resume 为续传偏移列表，每项含 relative、received_bytes，由接收端按本地未完成分块实际长度给出 |
 | file_chunk | 发送端 → 接收端（会话数据面） | session_id、transfer_id、file_index、offset、length、sha256、data | 无 | 分块数据；单块不超过 256 KiB；offset 必须等于该文件已确认字节；data 必须密文 |
 | file_ack | 接收端 → 发送端（会话数据面） | session_id、transfer_id、file_index、acked_bytes | sha256 | 累计确认；acked_bytes 只增不减，可一次确认多块 |
 | file_complete | 发送端 → 接收端（会话数据面） | session_id、transfer_id、digest | 无 | 全部块确认后发送整体摘要 |
 | file_abort | 双向（会话数据面） | session_id、transfer_id、reason | 无 | 任一方中止；reason 为用户可读文案 |
+| file_result | 接收端 → 发送端（会话数据面） | session_id、transfer_id、verified、digest | error_code、error_message | 整文件校验回执；verified 为真表示收端已落盘且整树摘要一致；为假必须带 error_code |
 | clipboard_update | 双向（会话数据面） | session_id、kind、size_bytes、digest、content | encoding | 剪贴板内容；kind 取 text、image；text 用 UTF-8 |
 | clipboard_request | 接收端 → 来源端（会话数据面） | session_id、kind | 无 | 请求当前剪贴板内容 |
 | clipboard_ack | 来源端 → 请求端（会话数据面） | session_id、kind、digest、applied | 无 | applied 为假表示去重或环回抑制，不再回写 |
@@ -87,15 +88,18 @@
 | wall_preview | 控制端 → 信令服务 | wall_id、cell | 无 | 申请预览令牌；同一墙同一格同一账号重新申请即吊销旧令牌 |
 | wall_preview_granted | 信令服务 → 控制端 | wall_id、cell、preview_token、expires_at | 无 | 预览令牌 60 秒有效，绑定墙、格、账号与设备，scope 固定 view |
 | wall_preview_revoked | 信令服务 → 控制端 | wall_id、cell、reason | 无 | 墙关闭、重新签发或令牌失效时推送；收到后必须停止使用旧令牌 |
+| wall_bind | 被控端 → 信令服务 | wall_id、session_id | 无 | 登记屏幕墙归属；必须已认证、验签通过，且发送方是该会话的被控端 |
+| wall_bound | 信令服务 → 被控端 | wall_id、account_id、bound_at | 无 | 登记结果；同墙同账号重复上报幂等，同墙换账号返回 `WALL_OWNERSHIP_CONFLICT` |
 | error | 双向 | code、message | 无 | 统一错误；不得带异常类名、堆栈、路径 |
 
-### 3.1 文件传输与剪贴板顺序语义（v1.3 追加）
+### 3.1 文件传输与剪贴板顺序语义（v1.3 追加，v1.6 修订）
 
 顺序：
 
-1. `file_offer` → `file_accept` →（`file_chunk` → `file_ack`）* → `file_complete`；`file_abort` 可在任意阶段出现并立即终止。
+1. `file_offer` → `file_accept` →（`file_chunk` → `file_ack`）* → `file_complete` → `file_result`；`file_abort` 可在任意阶段出现并立即终止。
 2. `file_complete` 或 `file_abort` 之后不得再发 `file_chunk`；收到即丢弃并回 `FILE_CHUNK_INVALID`。
 3. `file_chunk` 的 `offset` 必须等于该文件已确认字节；重复块幂等处理，`file_ack` 的 `acked_bytes` 不得回退。
+4. 发送端只有收到 `file_result` 且 `verified=true`、`digest` 与自身一致时才可标记完成；在此之前界面必须显示「等待对端校验」，不得把已发送当作已到达。
 
 大小上限：
 
@@ -123,6 +127,24 @@
 - 失效：服务端关闭墙、重新签发同格令牌或主动吊销时推送 `wall_preview_revoked`；未收到推送但令牌过期的，按 `PREVIEW_TOKEN_INVALID` 处理并重新申请。
 - 令牌只出现在 `wall_focus_granted` 与 `wall_preview_granted` 的 payload 中，不得写入日志、审计详情或界面文案。
 - 消息与命令层对应关系：`wall_focus`/`wall_unfocus` 对应第 30、45 条，`wall_preview` 对应第 47 条；服务端只签发凭证，不代替命令层的预算与格号校验。
+
+### 3.3 屏幕墙归属登记消息语义（v1.5 追加）
+
+- `wall_bind` 只能由被控端（host）发送，用于把 `wall_id` 归属到该设备所绑定的账号；服务端回 `wall_bound`。
+- 身份与授权：必须使用已认证连接并携带 A1 设备公钥可验证的包络签名；账号由服务端按 `device_id` 从账号库解析，不得由 payload 自报；发送方必须是 `session_id` 对应会话的参与者且为该会话确认过的被控端（`answer` 发送方）。任一条件不满足返回 `AUTH_FAILED`，不得写入归属。
+- 幂等：同一 `wall_id` 由同一账号重复上报返回成功，`bound_at` 保持首次绑定时间不变。
+- 冲突：同一 `wall_id` 已归属其它账号时返回 `WALL_OWNERSHIP_CONFLICT`，保留原绑定，不静默覆盖。
+- 持久化：归属写入服务端账号库（`accounts.db` 的 `walls` 表），服务重启后仍生效；成功与拒绝都写一条审计事件，冲突拒绝事后可查。
+- 未登记归属的墙被视为不存在：`wall_preview`、`wall_focus` 返回 `SCOPE_INSUFFICIENT`，不得因注册设备即可操作任意墙。
+
+### 3.4 文件回执、续传与降级通道语义（v1.6 追加）
+
+- 整文件校验：接收端在 `file_complete` 后按 relative 排序重算整树摘要；一致才回 `file_result(verified=true)` 并把 `.part` 落为正式文件，不一致清理临时文件并回 `verified=false` 与 `TRANSFER_HASH_MISMATCH`。
+- 逐块校验：`file_chunk` 的 `sha256` 与 `data` 不符回 `CHUNK_CHECKSUM_MISMATCH` 并中止该传输；不得把无效块计入 `acked_bytes`。
+- 续传：接收端按本地 `.part` 实际长度在 `file_accept.resume` 回报偏移，发送端从该偏移起传；发送端不得自行假设偏移，也不得重发已确认前缀。
+- 背压：未确认在途超过 4 MiB 时发送端必须停发等待 `file_ack`，不得阻塞媒体与输入通道；单次等待超过实现对端确认超时（默认 30 秒）按 `SESSION_CHANNEL_TIMEOUT` 失败并给出原因。
+- 通道可替换：文件与剪贴板只依赖会话通道抽象；信令降级通道与后续正式数据面会话密钥可互换，传输逻辑不得写死在中继分支。
+- 降级可见性：经信令降级通道转发时，`file_chunk`、`clipboard_update` 的载荷对中继可见，**未达端到端加密**；界面与日志必须给出可感知提示，缺口关闭依据必须明写该限制，敏感内容不得在未加密通道传输。
 
 ## 四、设备鉴权流程
 
@@ -176,12 +198,13 @@ presence 规则：
 | FILE_OFFER_REJECTED | 接收端拒绝传输提议（空间不足、路径不安全、scope 不足） | 停止发送并提示原因，不重试同一提议 |
 | FILE_CHUNK_INVALID | 块长度、偏移或摘要非法，或 complete/abort 后仍收到块 | 丢弃该块并要求重传，必要时中止任务 |
 | CLIPBOARD_DIGEST_MISMATCH | 剪贴板内容与摘要不一致 | 丢弃内容并请求重发 |
+| WALL_OWNERSHIP_CONFLICT | `wall_bind` 的 `wall_id` 已归属其它账号 | 停止重试；由原归属账号先解绑或改用其它墙标识 |
 
 错误 `message` 为用户可读中文，不出现异常类名、堆栈、SQL 与文件路径。
 
 ## 八、版本与兼容
 
-- v1 冻结日期 2026-11-10；v1.1 于同日按契约-202611-002 追加 `display_update` 并扩容画质档位枚举，只增不删；v1.2 于同日按契约-202611-006 追加 `presence` 设备级在线心跳与 90 秒过期口径，只增不删；v1.3 于同日按契约-202611-007 追加文件传输 6 类与剪贴板 3 类消息、大小上限与顺序语义，只增不删；v1.4 于同日按契约-202611-009 追加屏幕墙聚焦与预览 7 类消息及失效语义，只增不删；新增可选字段不升版本，删除字段、改字段语义、改消息类型含义必须升 v2。
+- v1 冻结日期 2026-11-10；v1.1 于同日按契约-202611-002 追加 `display_update` 并扩容画质档位枚举，只增不删；v1.2 于同日按契约-202611-006 追加 `presence` 设备级在线心跳与 90 秒过期口径，只增不删；v1.3 于同日按契约-202611-007 追加文件传输 6 类与剪贴板 3 类消息、大小上限与顺序语义，只增不删；v1.4 于同日按契约-202611-009 追加屏幕墙聚焦与预览 7 类消息及失效语义，只增不删；v1.5 于同日按契约-202611-015 追加屏幕墙归属登记 `wall_bind`/`wall_bound` 与 `WALL_OWNERSHIP_CONFLICT`，只增不删；v1.6 于同日按契约-202611-014 追加 `file_result` 整文件校验回执、`file_offer.digest` 列为必填、`file_accept.resume` 明确为续传偏移列表，并补 3.4 节背压与降级通道可见性语义，只增不删；新增可选字段不升版本，删除字段、改字段语义、改消息类型含义必须升 v2。
 - 新旧版本至少并行一个发布周期；下线日期写入本文件。
 - 客户端与服务端在 `register` 与 `auth_ok` 中交换版本；不兼容时返回 `PROTOCOL_VERSION_UNSUPPORTED`。
 - 任何字段改动走契约变更记录，经 M03 批准后落地。

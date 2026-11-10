@@ -4,7 +4,7 @@
 # 文件用途    : 端到端远程输入验证的被控端代理: 真实信令认证、中继数据面接收、记事本注入与取证
 # 架构定位    : 验收装置中的被控端进程, 与控制器分进程运行, 输入事件经真实 TCP 中继送达
 # 核心功能    : 注册/认证 → 等待 offer → answer/relay_allocate → 数据面握手 → AEAD 通道 →
-#               前台聚焦 → 逐字符 SendInput → Ctrl+A/C/S 与文件/截图三重取证 → 回传 proof
+#               前台聚焦 → 逐字符 SendInput → Ctrl+C/Ctrl+S 与文件/截图三重取证 → 回传 proof
 # 职责边界    : 只写本进程证据目录; 不改产品代码; 不访问公网; 焦点拿不到时如实报告不注入
 # ==========================================================================================
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import os
 import socket
 import subprocess
@@ -123,6 +124,8 @@ def run(arguments: argparse.Namespace) -> int:
     identity = DeviceIdentity.generate()
     process = subprocess.Popen([str(notepad), str(target)])
     original_clipboard = read_clipboard_text()
+    # 清空剪贴板, 避免上一轮残留文本让 Ctrl+C 断言假通过
+    write_clipboard_text("")
     window = _wait_window(target.name, 15.0)
     if window is None:
         process.terminate()
@@ -176,7 +179,7 @@ def run(arguments: argparse.Namespace) -> int:
         relay_socket = relay_connect(relay_host, relay_port, relay_token, session_id, "publisher")
         # 先告知控制端“发布端已配对”, 避免订阅端在无对端时先发帧被数据面断开
         write_json(work / "dataplane_ready.json", {"ready": True, "role": "publisher"})
-        session = host_handshake(relay_socket, identity)
+        session = host_handshake(relay_socket, identity, session_id, str(offer_payload.get("from_device_id")))
         channel = AeadChannel(relay_socket, session)
         _emit(f"被控端已接入中继数据面: {relay_host}:{relay_port}")
 
@@ -221,9 +224,13 @@ def run(arguments: argparse.Namespace) -> int:
                 clipboard_text = ""
                 file_text = ""
                 if focused:
-                    injector.select_all()
-                    injector.copy()
-                    clipboard_ok = _wait_clipboard(expected, 5.0)
+                    clipboard_ok = False
+                    for _ in range(3):
+                        injector.select_all()
+                        injector.copy()
+                        if _wait_clipboard(expected, 2.0):
+                            clipboard_ok = True
+                            break
                     clipboard_text = read_clipboard_text() or ""
                     injector.save()
                     file_ok = _wait_file_text(target, expected, 5.0)
@@ -263,8 +270,14 @@ def run(arguments: argparse.Namespace) -> int:
         client.close()
         if original_clipboard is not None:
             write_clipboard_text(original_clipboard)
+        if window is not None:
+            ctypes.windll.user32.PostMessageW(window, 0x0010, 0, 0)
         with contextlib.suppress(OSError):
-            process.terminate()
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+            )
 
 
 def main(argv: list[str] | None = None) -> int:

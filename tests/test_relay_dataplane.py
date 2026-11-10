@@ -8,6 +8,7 @@ import socket
 import struct
 import threading
 import time
+import tracemalloc
 
 from rdc.relay.dataplane import DATA_MAX_FRAME_BYTES, RelayDataPlane, RelayGrant, TokenBucket
 from rdc.relay.server import RelayConfig, RelayServer, recv_frame, send_frame
@@ -294,6 +295,21 @@ def test_oversized_data_frame_is_rejected():
         server.stop()
 
 
+def test_budget_exceeded_counts_measured_wire_rate():
+    from rdc.relay.dataplane import _Session
+
+    plane = RelayDataPlane(lambda token: None, 1, target_kbps=100)
+    session = _Session(session_id="s1", budget_kbps=3000)
+    session.stats.window_started = time.monotonic() - 2.0
+    session.stats.window_bytes = 100_000
+    plane._check_budget(session, "publisher", 1)
+    assert session.stats.budget_exceeded == 1
+    assert plane.snapshot()["total_budget_exceeded"] == 1
+    # 订阅方向不计入发布码率
+    plane._check_budget(session, "subscriber", 100_000)
+    assert session.stats.budget_exceeded == 1
+
+
 def test_healthz_exposes_dataplane_counters():
     server, _port = _start_relay()
     try:
@@ -305,7 +321,97 @@ def test_healthz_exposes_dataplane_counters():
             "bytes_forwarded",
             "frames_forwarded",
             "frames_dropped",
+            "budget_exceeded",
         ):
             assert key in body
     finally:
+        server.stop()
+
+
+# --------------------------------------------------------------- 未配对时序
+
+
+def _assert_connection_alive(connection: socket.socket, timeout: float = 0.5) -> None:
+    """读不到数据也没有 EOF, 说明连接仍被中继保持."""
+    connection.settimeout(timeout)
+    try:
+        chunk = connection.recv(1)
+    except TimeoutError:
+        return
+    finally:
+        connection.settimeout(10.0)
+    raise AssertionError(f"连接被中继断开, 读到 {chunk!r}")
+
+
+def test_subscriber_frame_before_publisher_keeps_connection_and_resumes():
+    """先订阅后发布: 未配对时的首帧短暂等待配对而不是断链, 配对后双向继续转发."""
+    server, port = _start_relay()
+    subscriber = publisher = None
+    try:
+        token = _grant(server, "session-asym")
+        subscriber = _connect(port, token, "session-asym", "subscriber")
+        early = b"subscriber-first-frame"
+        # 复现时序: 订阅端已通过令牌校验并立即发帧, 发布端约十几毫秒后才接入
+        _send_raw(subscriber, early)
+        time.sleep(0.19)
+        publisher = _connect(port, token, "session-asym", "publisher")
+
+        # 首帧在等待窗口内等到配对后照常送达, 而不是把订阅端连接关掉
+        assert recv_frame(publisher) == early
+
+        # 配对后两个方向都恢复正常转发
+        downstream = b"publisher-first-frame"
+        _send_raw(publisher, downstream)
+        assert recv_frame(subscriber) == downstream
+        upstream = b"subscriber-later-frame"
+        _send_raw(subscriber, upstream)
+        assert recv_frame(publisher) == upstream
+
+        snapshot = server.dataplane.snapshot()
+        deadline = time.time() + 2
+        # 计数在对端收到字节之后才累加, 读快照时稍等一拍
+        while snapshot["total_frames_forwarded"] < 3 and time.time() < deadline:
+            time.sleep(0.01)
+            snapshot = server.dataplane.snapshot()
+        assert snapshot["total_frames_dropped"] == 0
+        assert snapshot["total_frames_forwarded"] == 3
+        _assert_connection_alive(subscriber)
+    finally:
+        for sock in (publisher, subscriber):
+            if sock is not None:
+                sock.close()
+        server.stop()
+
+
+def test_unpaired_frames_are_dropped_without_unbounded_buffering():
+    """对端始终不出现: 帧全部丢弃并计数, 连接保持, 内存不随帧数增长."""
+    server, port = _start_relay()
+    subscriber = None
+    frames = 256
+    payload = b"\x5a" * 4096
+    tracemalloc.start()
+    try:
+        token = _grant(server, "session-lonely")
+        subscriber = _connect(port, token, "session-lonely", "subscriber")
+        baseline = tracemalloc.get_traced_memory()[0]
+        for _ in range(frames):
+            _send_raw(subscriber, payload)
+
+        deadline = time.time() + 10
+        snapshot = server.dataplane.snapshot()
+        while snapshot["total_frames_dropped"] < frames and time.time() < deadline:
+            time.sleep(0.02)
+            snapshot = server.dataplane.snapshot()
+        peak = tracemalloc.get_traced_memory()[1]
+
+        assert snapshot["total_frames_forwarded"] == 0
+        assert snapshot["total_frames_dropped"] == frames
+        assert snapshot["sessions"] == 1
+        # 不缓存未配对帧: 峰值增量应远小于 256 * 4 KiB = 1 MiB
+        assert peak - baseline < 1 << 20
+        _assert_connection_alive(subscriber)
+    finally:
+        tracemalloc.stop()
+        if subscriber is not None:
+            subscriber.close()
         server.stop()

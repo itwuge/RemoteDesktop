@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from rdc.connect import relay as relay_module
+from rdc.connect.relay import RelayUnavailable, relay_ca_path
 from rdc.relay.server import RelayConfig, RelayServer, load_config, recv_frame, send_frame
 from rdc.relay.tls import build_client_context, build_server_context
 
@@ -104,14 +106,11 @@ def _touch_cert(tmp_path: Path) -> tuple[Path, Path, Path]:
 # --------------------------------------------------------------- 配置校验
 
 
-def test_tls_disabled_by_default_keeps_existing_behavior():
-    config = load_config(EXAMPLE)
+def test_tls_disabled_still_supports_plaintext_mode(tmp_path):
+    path = _write_config(tmp_path, tls_enabled="false")
+    config = load_config(path)
     assert config.tls_enabled is False
     assert config.require_client_cert is False
-    # 模板里有占位路径, 但未启用 TLS 时不校验、也不建立上下文
-    assert config.cert_file.endswith("server.crt")
-    # 既有默认值不变: 3 Mbps / 2 路 / 0.08 开销
-    assert config.budget_kbps == 1380
     assert RelayServer(config).tls_context is None
 
 
@@ -276,6 +275,49 @@ def test_mutual_tls_rejects_client_without_certificate():
     finally:
         server.stop()
         thread.join(timeout=10)
+
+
+def test_relay_ca_resolves_from_bundled_assets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """冻结包内 assets/ca.crt 应作为信任锚命中, 不依赖开发树路径."""
+    bundle = tmp_path / "bundle"
+    assets = bundle / "assets"
+    assets.mkdir(parents=True)
+    ca_file = assets / "ca.crt"
+    ca_file.write_text("dummy-ca", encoding="utf-8")
+    monkeypatch.delenv("RDC_RELAY_CA", raising=False)
+    monkeypatch.setattr(relay_module.sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setattr(relay_module.sys, "frozen", True, raising=False)
+
+    assert relay_ca_path() == ca_file
+
+
+def test_relay_ca_reports_chinese_reason_when_all_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """环境变量与包内资源都不存在时, 给中文原因且不返回空信任锚."""
+    monkeypatch.delenv("RDC_RELAY_CA", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(relay_module, "bundled_ca_roots", lambda: (empty,))
+    monkeypatch.setattr(relay_module, "default_ca_path", lambda: empty / "dev" / "ca.crt")
+
+    with pytest.raises(RelayUnavailable) as excinfo:
+        relay_ca_path()
+    message = str(excinfo.value)
+    assert "缺少中继信任锚" in message
+    assert "RDC_RELAY_CA" in message
+
+
+def test_relay_ca_env_var_wins_over_bundled_assets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """显式配置的 RDC_RELAY_CA 优先于包内资源."""
+    override = tmp_path / "custom" / "ca.crt"
+    override.parent.mkdir()
+    override.write_text("custom-ca", encoding="utf-8")
+    bundled = tmp_path / "bundle" / "assets" / "ca.crt"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("dummy-ca", encoding="utf-8")
+    monkeypatch.setenv("RDC_RELAY_CA", str(override))
+    monkeypatch.setattr(relay_module.sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
+
+    assert relay_ca_path() == override
 
 
 def test_mutual_tls_accepts_client_with_valid_certificate():

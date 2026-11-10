@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import time
@@ -30,9 +31,13 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from rdc.core.errors import (
     CHUNK_CHECKSUM_MISMATCH,
+    FILE_OFFER_REJECTED,
+    SESSION_CHANNEL_TIMEOUT,
+    SESSION_CHANNEL_UNAVAILABLE,
     TRANSFER_HASH_MISMATCH,
     TRANSFER_IO_ERROR,
     TRANSFER_NOT_FOUND,
@@ -41,6 +46,7 @@ from rdc.core.errors import (
 )
 from rdc.core.logging import log_event
 from rdc.core.result import CommandResult
+from rdc.files.digest import tree_digest
 from rdc.files.journal import JOURNAL_DIR_NAME, TransferJournal
 from rdc.files.model import (
     CHUNK_SIZE,
@@ -51,8 +57,36 @@ from rdc.files.model import (
 )
 from rdc.files.ratelimit import DEFAULT_VIDEO_FLOOR_KBPS, TokenBucket, plan_bandwidth
 from rdc.files.scope import SCOPE_INVALID, SCOPE_LEVELS, scope_rejection
+from rdc.session.channel import (
+    CHANNEL_BACKPRESSURE,
+    CHANNEL_CLOSED,
+    ChannelInfo,
+    SessionChannel,
+    SessionChannelError,
+)
 
 _COPY_BLOCK = 1024 * 1024
+_HASH_READ_BYTES = 1024 * 1024
+
+
+@dataclass
+class _RemoteState:
+    """通道模式任务的发送端状态; 只存在内存, 断点续传由收端 .part 决定."""
+
+    session_id: str
+    transfer_id: str
+    phase: str = "hashing"
+    round: int = 0
+    offer_sent: bool = False
+    last_activity_at: float = 0.0
+    hash_order: list[int] = field(default_factory=list)
+    hash_pos: int = 0
+    hash_offset: int = 0
+    item_started: bool = False
+    item_hasher: Any = field(default_factory=hashlib.sha256)
+    tree: Any = field(default_factory=hashlib.sha256)
+    acked: list[int] = field(default_factory=list)
+    digest: str = ""
 
 
 def human_size(size: int) -> str:
@@ -81,6 +115,69 @@ class FileTransferService:
     poll_budget_bytes: int = DEFAULT_POLL_BUDGET_BYTES
     clock: Callable[[], float] = time.monotonic
     scope: str = "control"
+    channel: SessionChannel | None = None
+    allow_local_staging: bool = True
+    ack_timeout_s: float = 30.0
+    inflight_limit_bytes: int = 4 * 1024 * 1024
+    remote_states: dict[str, _RemoteState] = field(default_factory=dict)
+
+    # ---------------------------------------------------------------- 会话通道
+    def bind_channel(self, channel: SessionChannel | None) -> CommandResult:
+        """接入或解除会话通道; 接入后传输不再做本机落盘复制."""
+        self.channel = channel
+        if channel is None:
+            log_event("files.transfer", "transfer.channel_unbound")
+            return CommandResult(ok=True, message="已解除会话通道", data=self.channel_data())
+        info = channel.info()
+        log_event(
+            "files.transfer",
+            "transfer.channel_bound",
+            kind=info.kind,
+            session_id=info.session_id,
+            visible_to_relay=info.visible_to_relay,
+            encrypted=info.encrypted,
+        )
+        return CommandResult(ok=True, message=self.channel_message(info), data=self.channel_data())
+
+    def channel_status(self) -> CommandResult:
+        """查询当前传输通道; 未接入时明确区分本机暂存与未接入."""
+        return CommandResult(ok=True, message=self.channel_message(), data=self.channel_data())
+
+    def channel_data(self) -> dict[str, Any]:
+        info = self._channel_info()
+        if info is None:
+            return {
+                "bound": False,
+                "kind": "",
+                "session_id": "",
+                "encrypted": False,
+                "visible_to_relay": False,
+                "budget_kbps": 0,
+                "mode": "local_staging" if self.allow_local_staging else "unbound",
+            }
+        return {
+            "bound": True,
+            "kind": info.kind,
+            "session_id": info.session_id,
+            "encrypted": info.encrypted,
+            "visible_to_relay": info.visible_to_relay,
+            "budget_kbps": info.budget_kbps,
+            "mode": "channel",
+        }
+
+    def channel_message(self, info: ChannelInfo | None = None) -> str:
+        """通道提示文案; 降级通道必须让用户知道载荷对中继可见."""
+        current = info if info is not None else self._channel_info()
+        if current is None:
+            if self.allow_local_staging:
+                return "未接入会话通道: 当前为本机暂存, 文件不会离开本机"
+            return "未接入会话通道: 当前无法跨端传输"
+        if current.visible_to_relay:
+            return "已接入信令降级通道: 载荷对中继可见, 未达端到端加密"
+        return f"已接入{current.kind}通道"
+
+    def _channel_info(self) -> ChannelInfo | None:
+        return None if self.channel is None else self.channel.info()
 
     # ---------------------------------------------------------------- 授权范围
     def set_scope(self, scope: str) -> CommandResult:
@@ -131,6 +228,19 @@ class FileTransferService:
                 )
 
         destination = Path(destination_dir)
+        if self.channel is not None:
+            return self._start_remote_transfer(
+                source,
+                destination,
+                rate_limit_kbps=rate_limit_kbps,
+                video_floor_kbps=video_floor_kbps,
+            )
+        if not self.allow_local_staging:
+            return CommandResult(
+                ok=False,
+                message="尚未接入会话通道, 无法跨端传输",
+                error_code=SESSION_CHANNEL_UNAVAILABLE,
+            )
         if destination.exists() and not destination.is_dir():
             return CommandResult(ok=False, message="目标目录不可用", error_code=TRANSFER_IO_ERROR)
         try:
@@ -193,7 +303,10 @@ class FileTransferService:
         if job is None:
             return CommandResult(ok=False, message="传输任务不存在", error_code=TRANSFER_NOT_FOUND)
         if job.state == "running":
-            self._advance(job, self.poll_budget_bytes)
+            if job.remote:
+                self._advance_remote(job)
+            else:
+                self._advance(job, self.poll_budget_bytes)
         return CommandResult(
             ok=job.state != "failed",
             message=job.message(),
@@ -213,8 +326,9 @@ class FileTransferService:
             return CommandResult(ok=False, message="只有进行中的任务可以暂停")
         job.state = "paused"
         job.ended_at = self.clock()
-        TransferJournal.for_destination(job.destination).save(job)
-        log_event("files.transfer", "transfer.paused", job_id=job_id, sent_bytes=job.sent_bytes)
+        if not job.remote:
+            TransferJournal.for_destination(job.destination).save(job)
+        log_event("files.transfer", "transfer.paused", job_id=job_id, sent_bytes=job.sent_bytes, remote=job.remote)
         return CommandResult(ok=True, message="传输已暂停, 可继续续传", data=job.snapshot(self.clock()))
 
     def resume_transfer(self, job_id: str) -> CommandResult:
@@ -232,8 +346,25 @@ class FileTransferService:
             job.started_at += max(0.0, now - job.ended_at)
         job.state = "running"
         job.ended_at = None
-        TransferJournal.for_destination(job.destination).save(job)
-        log_event("files.transfer", "transfer.resumed", job_id=job_id, sent_bytes=job.sent_bytes)
+        if job.remote:
+            state = self.remote_states.get(job_id)
+            if state is None:
+                return CommandResult(ok=False, message="通道任务状态已丢失, 请重新开始传输")
+            state.last_activity_at = now
+            if state.phase != "hashing":
+                state.round += 1
+                state.transfer_id = f"{job_id}-{state.round}"
+                state.phase = "offering"
+                state.offer_sent = False
+                state.acked = [0] * len(job.items)
+                for item in job.items:
+                    item.sent = 0
+                job.sent_bytes = 0
+                job.acked_bytes = 0
+                job.phase = "waiting_accept"
+        else:
+            TransferJournal.for_destination(job.destination).save(job)
+        log_event("files.transfer", "transfer.resumed", job_id=job_id, sent_bytes=job.sent_bytes, remote=job.remote)
         return CommandResult(
             ok=True,
             message=f"已从 {human_size(job.sent_bytes)} 处继续传输",
@@ -252,8 +383,23 @@ class FileTransferService:
             return CommandResult(ok=False, message="任务已结束")
         job.state = "canceled"
         job.ended_at = self.clock()
-        TransferJournal.for_destination(job.destination).remove(job.job_id)
-        log_event("files.transfer", "transfer.canceled", job_id=job_id, sent_bytes=job.sent_bytes)
+        if job.remote:
+            state = self.remote_states.pop(job_id, None)
+            if state is not None and self.channel is not None:
+                try:
+                    self.channel.send(
+                        "file_abort",
+                        {
+                            "session_id": state.session_id,
+                            "transfer_id": state.transfer_id,
+                            "reason": "用户取消",
+                        },
+                    )
+                except SessionChannelError as exc:
+                    log_event("files.transfer", "transfer.abort_send_failed", level="WARNING", code=exc.code)
+        else:
+            TransferJournal.for_destination(job.destination).remove(job.job_id)
+        log_event("files.transfer", "transfer.canceled", job_id=job_id, sent_bytes=job.sent_bytes, remote=job.remote)
         return CommandResult(
             ok=True,
             message=f"传输已取消, 已传 {human_size(job.sent_bytes)}",
@@ -299,6 +445,382 @@ class FileTransferService:
                 )
             )
         return results
+
+    # ---------------------------------------------------------------- 通道发送
+    def _start_remote_transfer(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        rate_limit_kbps: int,
+        video_floor_kbps: int,
+    ) -> CommandResult:
+        """建立通道模式任务; 先读源文件摘要, 不写本机目标目录."""
+        channel = self.channel
+        if channel is None:
+            return CommandResult(ok=False, message="尚未接入会话通道", error_code=SESSION_CHANNEL_UNAVAILABLE)
+        info = channel.info()
+        budget_kbps = rate_limit_kbps
+        if info.budget_kbps > 0:
+            usable = info.budget_kbps - video_floor_kbps
+            if usable <= 0:
+                return CommandResult(
+                    ok=False,
+                    message="链路预算不足以预留视频地板档, 已拒绝开始传输",
+                    error_code=TRANSFER_RATE_INVALID,
+                )
+            budget_kbps = min(rate_limit_kbps, usable) if rate_limit_kbps > 0 else usable
+        try:
+            channel.open()
+        except SessionChannelError as exc:
+            return CommandResult(ok=False, message=exc.message, error_code=exc.code)
+        try:
+            items = _collect_items(source, destination)
+        except OSError:
+            return CommandResult(ok=False, message="读取源文件失败", error_code=TRANSFER_IO_ERROR)
+        total = sum(item.size for item in items)
+        capacity = max(1, min(CHUNK_SIZE, total))
+        bucket = (
+            TokenBucket(budget_kbps * 1000 / 8, capacity, clock=self.clock, initial_tokens=capacity)
+            if budget_kbps > 0
+            else None
+        )
+        job = TransferJob(
+            job_id=f"transfer-{uuid.uuid4().hex[:10]}",
+            source=source,
+            destination=destination,
+            items=items,
+            total_bytes=total,
+            chunk_size=CHUNK_SIZE,
+            rate_limit_bps=budget_kbps * 1000,
+            clamped=bool(rate_limit_kbps) and budget_kbps < rate_limit_kbps,
+            channel="session",
+            remote=True,
+            phase="hashing",
+            started_at=self.clock(),
+            bucket=bucket,
+        )
+        self.jobs[job.job_id] = job
+        state = _RemoteState(
+            session_id=info.session_id,
+            transfer_id=f"{job.job_id}-1",
+            last_activity_at=self.clock(),
+            hash_order=sorted(range(len(items)), key=lambda index: items[index].relative),
+            acked=[0] * len(items),
+        )
+        self.remote_states[job.job_id] = state
+        log_event(
+            "files.transfer",
+            "transfer.started",
+            job_id=job.job_id,
+            channel="session",
+            files=len(items),
+            total_bytes=total,
+            visible_to_relay=info.visible_to_relay,
+            encrypted=info.encrypted,
+        )
+        suffix = "; 信令降级通道对中继可见" if info.visible_to_relay else ""
+        return CommandResult(
+            ok=True,
+            message=f"已排队 {len(items)} 个文件（{human_size(total)}）, 正在校验源文件（任务 {job.job_id}）{suffix}",
+            data=job.snapshot(self.clock()),
+        )
+
+    def _advance_remote(self, job: TransferJob) -> None:
+        state = self.remote_states.get(job.job_id)
+        if state is None:
+            self._fail_remote(job, TRANSFER_IO_ERROR, "通道任务状态已丢失, 请重新开始")
+            return
+        if not self._drain_remote(job, state):
+            return
+        now = self.clock()
+        if state.phase != "hashing" and now - state.last_activity_at > self.ack_timeout_s:
+            self._fail_remote(
+                job,
+                SESSION_CHANNEL_TIMEOUT,
+                f"对端 {int(self.ack_timeout_s)} 秒未确认, 可能链路丢帧或对端未接线",
+            )
+            return
+        if state.phase == "hashing":
+            self._hash_step(job, state)
+        elif state.phase == "offering":
+            self._send_offer(job, state)
+        elif state.phase == "accepted":
+            self._send_chunks(job, state)
+
+    def _drain_remote(self, job: TransferJob, state: _RemoteState) -> bool:
+        channel = self.channel
+        if channel is None:
+            self._fail_remote(job, SESSION_CHANNEL_UNAVAILABLE, "会话通道已解除")
+            return False
+        for _ in range(64):
+            try:
+                message = channel.receive(0)
+            except SessionChannelError as exc:
+                if exc.code == CHANNEL_BACKPRESSURE:
+                    continue
+                code = SESSION_CHANNEL_UNAVAILABLE if exc.code == CHANNEL_CLOSED else exc.code
+                self._fail_remote(job, code, exc.message)
+                return False
+            if message is None:
+                break
+            self._handle_remote(job, state, message[0], message[1])
+            if job.state != "running":
+                return False
+        return True
+
+    def _handle_remote(self, job: TransferJob, state: _RemoteState, msg_type: str, payload: dict[str, Any]) -> None:
+        if str(payload.get("transfer_id") or "") != state.transfer_id:
+            return
+        if msg_type == "file_accept":
+            self._on_accept(job, state, payload)
+        elif msg_type == "file_ack":
+            self._on_ack(job, state, payload)
+        elif msg_type == "file_result":
+            self._on_result(job, state, payload)
+        elif msg_type == "file_abort":
+            self._fail_remote(
+                job,
+                str(payload.get("error_code") or TRANSFER_IO_ERROR),
+                str(payload.get("reason") or "对端中止了传输"),
+            )
+        elif msg_type == "error":
+            self._fail_remote(
+                job,
+                str(payload.get("code") or "PROTOCOL_ERROR"),
+                str(payload.get("message") or "对端返回协议错误"),
+            )
+
+    def _on_accept(self, job: TransferJob, state: _RemoteState, payload: dict[str, Any]) -> None:
+        accepted = payload.get("accepted_items")
+        if not isinstance(accepted, list):
+            self._fail_remote(job, FILE_OFFER_REJECTED, "对端未返回可接收条目")
+            return
+        expected = {item.relative for item in job.items}
+        if {str(relative) for relative in accepted} != expected:
+            self._fail_remote(job, FILE_OFFER_REJECTED, "对端未接受全部条目, 已停止以免漏传")
+            return
+        resume: dict[str, int] = {}
+        raw_resume = payload.get("resume")
+        if isinstance(raw_resume, list):
+            for entry in raw_resume:
+                if not isinstance(entry, dict):
+                    continue
+                relative = entry.get("relative")
+                value = entry.get("received_bytes")
+                if isinstance(relative, str) and isinstance(value, int) and not isinstance(value, bool):
+                    resume[relative] = value
+        for index, item in enumerate(job.items):
+            amount = resume.get(item.relative, 0)
+            item.sent = max(0, min(item.size, amount))
+            state.acked[index] = item.sent
+        job.sent_bytes = sum(item.sent for item in job.items)
+        job.acked_bytes = sum(state.acked)
+        job.current_index = next(
+            (index for index, item in enumerate(job.items) if item.sent < item.size),
+            max(0, len(job.items) - 1),
+        )
+        state.phase = "accepted"
+        state.offer_sent = False
+        state.last_activity_at = self.clock()
+        job.phase = "sending"
+        log_event(
+            "files.transfer",
+            "transfer.accepted",
+            job_id=job.job_id,
+            resume_bytes=job.sent_bytes,
+            files=len(job.items),
+        )
+
+    def _on_ack(self, job: TransferJob, state: _RemoteState, payload: dict[str, Any]) -> None:
+        index = payload.get("file_index")
+        acked = payload.get("acked_bytes")
+        if not isinstance(index, int) or not 0 <= index < len(job.items) or not isinstance(acked, int):
+            return
+        ceiling = job.items[index].sent
+        state.acked[index] = max(state.acked[index], min(acked, ceiling))
+        job.acked_bytes = sum(state.acked)
+        state.last_activity_at = self.clock()
+
+    def _on_result(self, job: TransferJob, state: _RemoteState, payload: dict[str, Any]) -> None:
+        digest = str(payload.get("digest") or "")
+        if bool(payload.get("verified")) and digest == state.digest:
+            job.digest = digest
+            job.state = "completed"
+            job.phase = "completed"
+            job.acked_bytes = job.total_bytes
+            job.ended_at = self.clock()
+            self.remote_states.pop(job.job_id, None)
+            log_event("files.transfer", "transfer.completed", job_id=job.job_id, digest=digest)
+            return
+        code = str(payload.get("error_code") or TRANSFER_HASH_MISMATCH)
+        self._fail_remote(job, code, str(payload.get("message") or "对端整体校验失败, 文件未落盘"))
+
+    def _hash_step(self, job: TransferJob, state: _RemoteState) -> None:
+        remaining = self.poll_budget_bytes
+        while remaining > 0:
+            if state.hash_pos >= len(state.hash_order):
+                state.digest = state.tree.hexdigest()
+                state.phase = "offering"
+                state.offer_sent = False
+                job.phase = "waiting_accept"
+                state.last_activity_at = self.clock()
+                return
+            item = job.items[state.hash_order[state.hash_pos]]
+            if not state.item_started:
+                state.tree.update(item.relative.encode("utf-8") + b"\0")
+                state.item_started = True
+            need = item.size - state.hash_offset
+            if need <= 0:
+                state.tree.update(b"\0")
+                item.sha256 = state.item_hasher.hexdigest()
+                self._next_hash_item(state)
+                continue
+            take = min(need, remaining, _HASH_READ_BYTES)
+            try:
+                with item.source.open("rb") as handle:
+                    handle.seek(state.hash_offset)
+                    data = handle.read(take)
+            except OSError:
+                self._fail_remote(job, TRANSFER_IO_ERROR, "读取源文件失败")
+                return
+            if not data:
+                self._fail_remote(job, TRANSFER_IO_ERROR, "源文件在传输开始前发生变化")
+                return
+            state.item_hasher.update(data)
+            state.tree.update(data)
+            state.hash_offset += len(data)
+            remaining -= len(data)
+            if state.hash_offset >= item.size:
+                state.tree.update(b"\0")
+                item.sha256 = state.item_hasher.hexdigest()
+                self._next_hash_item(state)
+
+    @staticmethod
+    def _next_hash_item(state: _RemoteState) -> None:
+        state.hash_pos += 1
+        state.hash_offset = 0
+        state.item_started = False
+        state.item_hasher = hashlib.sha256()
+
+    def _send_offer(self, job: TransferJob, state: _RemoteState) -> None:
+        channel = self.channel
+        if channel is None or state.offer_sent:
+            return
+        payload = {
+            "session_id": state.session_id,
+            "transfer_id": state.transfer_id,
+            "items": [{"relative": item.relative, "size": item.size, "sha256": item.sha256} for item in job.items],
+            "total_bytes": job.total_bytes,
+            "chunk_size": job.chunk_size,
+            "digest_alg": "sha256",
+            "digest": state.digest,
+        }
+        try:
+            channel.send("file_offer", payload)
+        except SessionChannelError as exc:
+            if exc.code == CHANNEL_BACKPRESSURE:
+                return
+            self._fail_remote(job, exc.code, exc.message)
+            return
+        state.offer_sent = True
+        state.last_activity_at = self.clock()
+        job.phase = "waiting_accept"
+
+    def _send_chunks(self, job: TransferJob, state: _RemoteState) -> None:
+        channel = self.channel
+        if channel is None:
+            self._fail_remote(job, SESSION_CHANNEL_UNAVAILABLE, "会话通道已解除")
+            return
+        remaining = self.poll_budget_bytes
+        while remaining > 0:
+            index = next(
+                (position for position, item in enumerate(job.items) if item.sent < item.size),
+                None,
+            )
+            if index is None:
+                self._send_complete(job, state)
+                return
+            item = job.items[index]
+            inflight = job.sent_bytes - job.acked_bytes
+            allowance = min(
+                remaining,
+                job.chunk_size,
+                item.size - item.sent,
+                self.inflight_limit_bytes - inflight,
+            )
+            if allowance <= 0:
+                return
+            if job.bucket is not None:
+                allowance = min(allowance, job.bucket.take(allowance))
+                if allowance <= 0:
+                    return
+            try:
+                with item.source.open("rb") as handle:
+                    handle.seek(item.sent)
+                    data = handle.read(allowance)
+            except OSError:
+                self._fail_remote(job, TRANSFER_IO_ERROR, "读取源文件失败")
+                return
+            if not data:
+                self._fail_remote(job, TRANSFER_IO_ERROR, "源文件在传输过程中发生变化")
+                return
+            payload = {
+                "session_id": state.session_id,
+                "transfer_id": state.transfer_id,
+                "file_index": index,
+                "offset": item.sent,
+                "length": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "data": base64.b64encode(data).decode("ascii"),
+            }
+            try:
+                channel.send("file_chunk", payload)
+            except SessionChannelError as exc:
+                if exc.code == CHANNEL_BACKPRESSURE:
+                    return
+                self._fail_remote(job, exc.code, exc.message)
+                return
+            item.sent += len(data)
+            job.sent_bytes += len(data)
+            job.current_index = index
+            job.phase = "sending"
+            state.last_activity_at = self.clock()
+            remaining -= len(data)
+
+    def _send_complete(self, job: TransferJob, state: _RemoteState) -> None:
+        channel = self.channel
+        if channel is None:
+            self._fail_remote(job, SESSION_CHANNEL_UNAVAILABLE, "会话通道已解除")
+            return
+        try:
+            channel.send(
+                "file_complete",
+                {
+                    "session_id": state.session_id,
+                    "transfer_id": state.transfer_id,
+                    "total_bytes": job.total_bytes,
+                    "file_count": len(job.items),
+                    "digest": state.digest,
+                },
+            )
+        except SessionChannelError as exc:
+            if exc.code == CHANNEL_BACKPRESSURE:
+                return
+            self._fail_remote(job, exc.code, exc.message)
+            return
+        state.phase = "completing"
+        state.last_activity_at = self.clock()
+        job.phase = "verifying"
+
+    def _fail_remote(self, job: TransferJob, code: str, message: str) -> None:
+        job.state = "failed"
+        job.phase = "failed"
+        job.error_code = code
+        job.error_message = message
+        job.ended_at = self.clock()
+        self.remote_states.pop(job.job_id, None)
+        log_event("files.transfer", "transfer.failed", level="WARNING", job_id=job.job_id, code=code, reason=message)
 
     # ---------------------------------------------------------------- 内部推进
     def _scope_gate(self, action: str) -> CommandResult | None:
@@ -478,13 +1000,5 @@ def _collect_items(source: Path, destination_root: Path) -> list[TransferItem]:
 
 
 def _tree_digest(entries: list[tuple[str, Path]]) -> str:
-    """按相对路径与内容计算整体哈希, 与传输顺序无关."""
-    digest = hashlib.sha256()
-    for relative, path in sorted(entries, key=lambda entry: entry[0]):
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        with path.open("rb") as handle:
-            for block in iter(lambda: handle.read(_COPY_BLOCK), b""):
-                digest.update(block)
-        digest.update(b"\0")
-    return digest.hexdigest()
+    """按相对路径与内容计算整体哈希; 口径统一由 rdc.files.digest 提供."""
+    return tree_digest(entries)

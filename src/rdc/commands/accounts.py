@@ -17,11 +17,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from rdc.accounts.db import AccountStoreError, default_database_path
+from rdc.accounts.remote import RemoteAccountClient, build_remote_client_from_config
 from rdc.accounts.service import AccountService
+from rdc.accounts.session_store import SessionVault
 from rdc.accounts.store import AccountStore
 from rdc.core.result import CommandResult
 
 _service = AccountService()
+_UNSET = object()
 
 
 def configure(service: AccountService) -> None:
@@ -30,17 +33,32 @@ def configure(service: AccountService) -> None:
     _service = service
 
 
-def configure_persistent_store(path: str | Path | None = None) -> str | None:
-    """装配落盘账号库; 成功返回 None, 不可用时退化为内存存储并返回用户可见原因.
+def configure_persistent_store(
+    path: str | Path | None = None,
+    *,
+    restore_session: bool | None = None,
+    remote: RemoteAccountClient | object | None = _UNSET,
+) -> str | None:
+    """装配落盘账号库与跨端账号中心; 成功返回 None, 不可用时退化为内存存储并返回原因.
 
     只替换内部存储实现, 命令函数签名、返回字段与错误码均不变.
+    `restore_session` 为 None 时按是否启用远端自动决定是否恢复密文登录态;
+    服务端装配显式传 False, 避免在服务器上创建客户端会话仓.
     """
+    remote_client: RemoteAccountClient | None
+    if remote is _UNSET:
+        remote_client = build_remote_client_from_config() if path is None else None
+    else:
+        remote_client = remote if isinstance(remote, RemoteAccountClient) else None
+    if restore_session is None:
+        restore_session = remote_client is not None
+    vault = SessionVault() if restore_session and remote_client is not None else None
     try:
         store = AccountStore(default_database_path() if path is None else path)
     except AccountStoreError as exc:
-        configure(AccountService())
+        configure(AccountService(remote=remote_client, session_store=vault))
         return f"账号数据文件不可用, 本次运行无法保存账号: {exc}"
-    configure(AccountService(store=store))
+    configure(AccountService(store=store, remote=remote_client, session_store=vault))
     return None
 
 
@@ -144,3 +162,18 @@ def logout_account() -> CommandResult:
 def revoke_device_token(device_id: str) -> CommandResult:
     """主动吊销设备令牌 (契约第 44 条)."""
     return _service.revoke_device_token(device_id)
+
+
+def get_account_state() -> CommandResult:
+    """读取登录态与设备标识; 供账号页在启动时恢复已登录状态."""
+    return _service.account_state()
+
+
+def resolve_connection_access(
+    device_id: str,
+    scope: str = "control",
+    existing_session: str = "",
+    session_id: str = "",
+) -> CommandResult:
+    """受信设备免码准入判定并写一次审计; 供互控线在会话入口接入."""
+    return _service.authorize_connection(device_id, scope, existing_session, session_id)

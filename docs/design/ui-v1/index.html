@@ -15,6 +15,7 @@
   --warn:#e0a955; --warn-soft:rgba(224,169,85,.13);
   --danger:#ea6a6a; --danger-soft:rgba(234,106,106,.12);
   --shadow:0 30px 90px rgba(0,0,0,.55);
+  --brand-from:#5b97ff; --brand-to:#2f63d8;
   --switch-off:#2a3442;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
 }
@@ -59,7 +60,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .brand{display:flex;align-items:center;gap:11px;min-width:0}
 .brand-mark{
   width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex:0 0 auto;
-  background:linear-gradient(150deg,#5b97ff,#2f63d8);color:#fff;font-weight:700;font-size:16px;
+  background:linear-gradient(150deg,var(--brand-from),var(--brand-to));color:#fff;font-weight:700;font-size:16px;
   box-shadow:0 4px 14px rgba(47,111,224,.28);
 }
 .brand-mark.small{width:28px;height:28px;border-radius:8px;font-size:14px}

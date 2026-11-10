@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  设计令牌尺寸/字号 · 唯一来源 docs/design/ui-v1/design-tokens.json
+  spacing.ladder -> rdc_space_*, radius -> rdc_radius_*, borderWidth -> rdc_border_*,
+  iconSize -> rdc_icon_*, controlHeight.android -> rdc_control_*, navigation -> rdc_nav_*,
+  typography.scale -> rdc_text_*.
+  代码中的 dp(n) 与字号全部经 RdcTheme 的解析器取本文件, 不直接写字面量.
+-->
+<resources>
+    <!-- spacing.ladder (dp) -->
+    <dimen name="rdc_space_0">0dp</dimen>
+    <dimen name="rdc_space_2">2dp</dimen>
+    <dimen name="rdc_space_3">3dp</dimen>
+    <dimen name="rdc_space_4">4dp</dimen>
+    <dimen name="rdc_space_5">5dp</dimen>
+    <dimen name="rdc_space_6">6dp</dimen>
+    <dimen name="rdc_space_7">7dp</dimen>
+    <dimen name="rdc_space_8">8dp</dimen>
+    <dimen name="rdc_space_9">9dp</dimen>
+    <dimen name="rdc_space_10">10dp</dimen>
+    <dimen name="rdc_space_11">11dp</dimen>
+    <dimen name="rdc_space_12">12dp</dimen>
+    <dimen name="rdc_space_13">13dp</dimen>
+    <dimen name="rdc_space_14">14dp</dimen>
+    <dimen name="rdc_space_16">16dp</dimen>
+    <dimen name="rdc_space_18">18dp</dimen>
+    <dimen name="rdc_space_20">20dp</dimen>
+    <dimen name="rdc_space_22">22dp</dimen>
+    <dimen name="rdc_space_24">24dp</dimen>
+    <dimen name="rdc_space_26">26dp</dimen>
+
+    <!-- 非间距梯级的固定尺寸(控件高/头像/预览框等), 取值集中在此 -->
+    <dimen name="rdc_size_1">1dp</dimen>
+    <dimen name="rdc_size_28">28dp</dimen>
+    <dimen name="rdc_size_30">30dp</dimen>
+    <dimen name="rdc_size_32">32dp</dimen>
+    <dimen name="rdc_size_34">34dp</dimen>
+    <dimen name="rdc_size_36">36dp</dimen>
+    <dimen name="rdc_size_38">38dp</dimen>
+    <dimen name="rdc_size_39">39dp</dimen>
+    <dimen name="rdc_size_40">40dp</dimen>
+    <dimen name="rdc_size_42">42dp</dimen>
+    <dimen name="rdc_size_44">44dp</dimen>
+    <dimen name="rdc_size_45">45dp</dimen>
+    <dimen name="rdc_size_48">48dp</dimen>
+    <dimen name="rdc_size_56">56dp</dimen>
+    <dimen name="rdc_size_58">58dp</dimen>
+    <dimen name="rdc_size_60">60dp</dimen>
+    <dimen name="rdc_size_64">64dp</dimen>
+    <dimen name="rdc_size_72">72dp</dimen>
+    <dimen name="rdc_size_88">88dp</dimen>
+    <dimen name="rdc_size_96">96dp</dimen>
+
+    <!-- radius -->
+    <dimen name="rdc_radius_xs">5dp</dimen>
+    <dimen name="rdc_radius_sm">6dp</dimen>
+    <dimen name="rdc_radius_md">7dp</dimen>
+    <dimen name="rdc_radius_control">9dp</dimen>
+    <dimen name="rdc_radius_chip">9dp</dimen>
+    <dimen name="rdc_radius_card">13dp</dimen>
+    <dimen name="rdc_radius_panel">14dp</dimen>
+    <dimen name="rdc_radius_hero">18dp</dimen>
+    <dimen name="rdc_radius_pill">999dp</dimen>
+
+    <!-- borderWidth -->
+    <dimen name="rdc_border_hairline">1dp</dimen>
+    <dimen name="rdc_border_focus">2dp</dimen>
+
+    <!-- iconSize -->
+    <dimen name="rdc_icon_inline">14dp</dimen>
+    <dimen name="rdc_icon_body">16dp</dimen>
+    <dimen name="rdc_icon_nav">18dp</dimen>
+    <dimen name="rdc_icon_tab">20dp</dimen>
+    <dimen name="rdc_icon_header">18dp</dimen>
+
+    <!-- controlHeight.android -->
+    <dimen name="rdc_control_button">32dp</dimen>
+    <dimen name="rdc_control_button_small">27dp</dimen>
+    <dimen name="rdc_control_icon">28dp</dimen>
+    <dimen name="rdc_control_icon_large">34dp</dimen>
+    <dimen name="rdc_control_chip">27dp</dimen>
+    <dimen name="rdc_control_segment">26dp</dimen>
+
+    <!-- navigation -->
+    <dimen name="rdc_nav_tab_bar">60dp</dimen>
+    <dimen name="rdc_nav_page_padding">16dp</dimen>
+    <dimen name="rdc_nav_page_padding_landscape">22dp</dimen>
+
+    <!-- typography.scale (sp) -->
+    <dimen name="rdc_text_micro">9sp</dimen>
+    <dimen name="rdc_text_tiny">10sp</dimen>
+    <dimen name="rdc_text_caption">10.5sp</dimen>
+    <dimen name="rdc_text_meta">11sp</dimen>
+    <dimen name="rdc_text_body_small">11.5sp</dimen>
+    <dimen name="rdc_text_body">12sp</dimen>
+    <dimen name="rdc_text_body_strong">12.5sp</dimen>
+    <dimen name="rdc_text_subhead">13sp</dimen>
+    <dimen name="rdc_text_headline">15sp</dimen>
+    <dimen name="rdc_text_title">17sp</dimen>
+    <dimen name="rdc_text_page_title">19sp</dimen>
+    <dimen name="rdc_text_hero">20sp</dimen>
+    <dimen name="rdc_text_metric">22sp</dimen>
+    <dimen name="rdc_text_code">28sp</dimen>
+</resources>

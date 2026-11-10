@@ -11,9 +11,14 @@ Group=@GROUP@
 WorkingDirectory=@PREFIX@/app
 Environment=PYTHONPATH=@PREFIX@/app
 Environment=PYTHONUNBUFFERED=1
-# 日志固定落盘到可写目录, 并默认对来源 IP 脱敏
+# 日志固定落盘到可写目录; 服务端保留来源 IP 用于事故取证(仅本地 journald, 随容量上限滚动)
 Environment=RDC_LOG_DIR=@LOGDIR@
-Environment=RDC_LOG_REDACT_IP=1
+Environment=RDC_LOG_REDACT_IP=0
+# 账号库(含屏幕墙归属)必须落在可写状态目录: ProtectSystem=strict 下 /opt 只读,
+# StateDirectory 由 systemd 以服务账号创建并授予写权限, 重启与恢复演练都不会丢归属.
+StateDirectory=rdc-relay
+StateDirectoryMode=0700
+Environment=RDC_DATA_DIR=/var/lib/rdc-relay
 ExecStart=@PYTHON@ -m rdc.relay --config @CONFIG@
 # 证书轮换: SIGHUP 触发 TLS 上下文热加载, 不重启进程、不中断监听
 ExecReload=/bin/kill -HUP $MAINPID

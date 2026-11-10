@@ -42,21 +42,21 @@ class PageBase(QWidget):
         self.page_key = page_key
         self._sink: ResultSink | None = None
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 20, 24, 20)
-        outer.setSpacing(12)
+        outer.setContentsMargins(26, 22, 26, 22)
+        outer.setSpacing(14)
         header = QHBoxLayout()
         header.setSpacing(12)
-        accent_bar = QFrame()
-        accent_bar.setObjectName("titleBar")
-        accent_bar.setFixedSize(3, 46)
-        header.addWidget(accent_bar, 0, Qt.AlignmentFlag.AlignVCenter)
         caption = QVBoxLayout()
-        caption.setSpacing(2)
+        caption.setSpacing(3)
+        self.eyebrow_label = QLabel("")
+        self.eyebrow_label.setObjectName("eyebrow")
+        self.eyebrow_label.setVisible(False)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("pageTitle")
         self.subtitle_label = QLabel(subtitle)
         self.subtitle_label.setObjectName("pageSub")
         self.subtitle_label.setWordWrap(True)
+        caption.addWidget(self.eyebrow_label)
         caption.addWidget(self.title_label)
         caption.addWidget(self.subtitle_label)
         header.addLayout(caption)
@@ -84,6 +84,11 @@ class PageBase(QWidget):
         """装配处注入命令结果接收器."""
         self._sink = sink
 
+    def set_eyebrow(self, text: str) -> None:
+        """页头眉标: 页面名与登录态, 与原型页头一致."""
+        self.eyebrow_label.setText(text)
+        self.eyebrow_label.setVisible(bool(text))
+
     def report(self, action: str, result: CommandResult) -> None:
         """把命令结果交给装配处统一呈现, 页面只读结果."""
         if self._sink is not None:
@@ -91,6 +96,9 @@ class PageBase(QWidget):
 
     def refresh(self) -> None:
         """页面进入时刷新; 子类按需覆盖."""
+
+    def shutdown(self) -> None:
+        """页面销毁前的清理钩子; 有后台线程的页面覆盖, 默认无操作."""
 
     @staticmethod
     def section(title: str) -> tuple[QGroupBox, QVBoxLayout]:

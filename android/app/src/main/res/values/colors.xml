@@ -1,11 +1,81 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  文件        : colors.xml
-  所属目录    : android/app/src/main/res/values/
-  文件用途    : 应用图标背景色
-  架构定位    : 资源层
-  职责边界    : 只放颜色常量
+  设计令牌颜色 · 唯一来源 docs/design/ui-v1/design-tokens.json (colors.shared)
+  规则: 代码不得再出现十六进制颜色; 深/浅两套同名后缀由 RdcColor 按当前主题取用.
 -->
 <resources>
+    <!-- 应用图标背景 -->
     <color name="ic_launcher_background">#3B7BF6</color>
+
+    <!-- 深色(默认) -->
+    <color name="rdc_bg_dark">#0b0e13</color>
+    <color name="rdc_panel_dark">#121820</color>
+    <color name="rdc_panel2_dark">#0f141b</color>
+    <color name="rdc_panel3_dark">#1a212b</color>
+    <color name="rdc_card_dark">#141a23</color>
+    <color name="rdc_input_dark">#0e131a</color>
+    <color name="rdc_hover_dark">#1a222d</color>
+    <color name="rdc_line_dark">#222b37</color>
+    <color name="rdc_line_strong_dark">#2e3947</color>
+    <color name="rdc_text_dark">#e7edf6</color>
+    <color name="rdc_muted_dark">#8b98aa</color>
+    <color name="rdc_faint_dark">#5e6b7d</color>
+    <color name="rdc_accent_dark">#4d8dff</color>
+    <color name="rdc_accent_hover_dark">#679eff</color>
+    <color name="rdc_accent_strong_dark">#9dc0ff</color>
+    <color name="rdc_accent_soft_dark">#244d8dff</color>
+    <color name="rdc_ok_dark">#3fc996</color>
+    <color name="rdc_ok_soft_dark">#1f3fc996</color>
+    <color name="rdc_ok_border_dark">#523fc996</color>
+    <color name="rdc_warn_dark">#e0a955</color>
+    <color name="rdc_warn_soft_dark">#21e0a955</color>
+    <color name="rdc_warn_border_dark">#52e0a955</color>
+    <color name="rdc_danger_dark">#ea6a6a</color>
+    <color name="rdc_danger_soft_dark">#1fea6a6a</color>
+    <color name="rdc_danger_border_dark">#52ea6a6a</color>
+    <color name="rdc_brand_from_dark">#5b97ff</color>
+    <color name="rdc_brand_to_dark">#2f63d8</color>
+    <color name="rdc_media_text_dark">#c7d2e0</color>
+    <color name="rdc_media_text_strong_dark">#9fb0c6</color>
+    <color name="rdc_media_fill_dark">#0fffffff</color>
+    <color name="rdc_media_fill_strong_dark">#14ffffff</color>
+    <color name="rdc_media_line_dark">#24ffffff</color>
+    <color name="rdc_surface_dark">#091018</color>
+    <color name="rdc_overlay_dark">#cc080c12</color>
+
+    <!-- 浅色 -->
+    <color name="rdc_bg_light">#eef1f6</color>
+    <color name="rdc_panel_light">#ffffff</color>
+    <color name="rdc_panel2_light">#f5f7fa</color>
+    <color name="rdc_panel3_light">#eef2f7</color>
+    <color name="rdc_card_light">#ffffff</color>
+    <color name="rdc_input_light">#fbfcfe</color>
+    <color name="rdc_hover_light">#eef2f8</color>
+    <color name="rdc_line_light">#dfe5ed</color>
+    <color name="rdc_line_strong_light">#cbd4df</color>
+    <color name="rdc_text_light">#1d2733</color>
+    <color name="rdc_muted_light">#5f6d7e</color>
+    <color name="rdc_faint_light">#8c98a6</color>
+    <color name="rdc_accent_light">#2f6fe0</color>
+    <color name="rdc_accent_hover_light">#245fc8</color>
+    <color name="rdc_accent_strong_light">#1f57b8</color>
+    <color name="rdc_accent_soft_light">#1a2f6fe0</color>
+    <color name="rdc_ok_light">#16865f</color>
+    <color name="rdc_ok_soft_light">#1a16865f</color>
+    <color name="rdc_ok_border_light">#4716865f</color>
+    <color name="rdc_warn_light">#a76b12</color>
+    <color name="rdc_warn_soft_light">#1aa76b12</color>
+    <color name="rdc_warn_border_light">#47a76b12</color>
+    <color name="rdc_danger_light">#c54545</color>
+    <color name="rdc_danger_soft_light">#17c54545</color>
+    <color name="rdc_danger_border_light">#47c54545</color>
+    <color name="rdc_brand_from_light">#5b97ff</color>
+    <color name="rdc_brand_to_light">#2f63d8</color>
+    <color name="rdc_media_text_light">#c7d2e0</color>
+    <color name="rdc_media_text_strong_light">#9fb0c6</color>
+    <color name="rdc_media_fill_light">#0fffffff</color>
+    <color name="rdc_media_fill_strong_light">#14ffffff</color>
+    <color name="rdc_media_line_light">#24ffffff</color>
+    <color name="rdc_surface_light">#ffffff</color>
+    <color name="rdc_overlay_light">#ccf4f6fa</color>
 </resources>

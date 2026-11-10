@@ -18,7 +18,7 @@ from __future__ import annotations
 import platform
 import sys
 
-__version__ = "0.2.1"
+__version__ = "1.0.0"
 
 APP_NAME = "rdc-desktop"
 PRODUCT_NAME = "RDC 远程桌面"
@@ -43,5 +43,5 @@ def platform_tag() -> str:
 
 
 def artifact_basename() -> str:
-    """返回不带扩展名的产物名, 例如 rdc-desktop-0.2.0-windows-x64."""
+    """返回不带扩展名的产物名, 例如 rdc-desktop-1.0.0-windows-x64."""
     return f"{APP_NAME}-{__version__}-{platform_tag()}"

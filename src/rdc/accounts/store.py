@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from rdc.accounts.db import AccountDatabase
+from rdc.accounts.remote_protocol import normalize_platform
+from rdc.core.logging import redact
 
 PBKDF2_ITERATIONS = 200_000
 DEVICE_TOKEN_TTL_SECONDS = 30 * 24 * 3600
@@ -48,6 +50,15 @@ def scope_covers(grant_scope: str, requested: str) -> bool:
 def _iso(epoch: float) -> str:
     """把 epoch 秒转为带时区的 ISO 8601 字符串."""
     return datetime.fromtimestamp(epoch, tz=UTC).astimezone().isoformat(timespec="seconds")
+
+
+def _iso_utc(value: str) -> str:
+    """把已保存的 ISO 8601 时间统一成 UTC; 非法值原样返回, 不伪造时间."""
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return moment.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _hash_secret(secret: str) -> str:
@@ -74,15 +85,22 @@ class Account:
 
 @dataclass
 class DeviceRecord:
-    """设备记录; 一个账号可绑定多台设备, 一台设备可被多个账号持有授权."""
+    """设备记录; 一个账号可绑定多台设备, 一台设备可被多个账号持有授权.
+
+    `require_confirm` 默认 True: 新绑定设备必须逐次确认, 只有所有者显式「信任此设备」才置 False.
+    """
 
     device_id: str
     display_name: str
     owner_account_id: str | None = None
     bound_at: str | None = None
-    require_confirm: bool = False
+    require_confirm: bool = True
     last_seen_at: float | None = None
     presence_offline: bool = False
+    last_connected_at: float | None = None
+    platform: str = "unknown"
+    trusted_at: float | None = None
+    trust_source: str = ""
 
 
 @dataclass
@@ -137,6 +155,16 @@ class AccessRequest:
     created_at: float = field(default_factory=time.time)
     decided_at: float | None = None
     decided_by: str | None = None
+
+
+@dataclass
+class WallRecord:
+    """屏幕墙归属; 一个 wall_id 只归属一个账号, 绑定后只有该账号及其授权对象可预览."""
+
+    wall_id: str
+    account_id: str
+    bound_by_device_id: str = ""
+    bound_at: str = ""
 
 
 @dataclass
@@ -196,11 +224,27 @@ def _device_row(device: DeviceRecord) -> tuple[Any, ...]:
         int(device.require_confirm),
         device.last_seen_at,
         int(device.presence_offline),
+        device.last_connected_at,
+        device.platform,
+        device.trusted_at,
+        device.trust_source,
     )
 
 
 def _device_from_row(row: tuple[Any, ...]) -> DeviceRecord:
-    device_id, display_name, owner_account_id, bound_at, require_confirm, last_seen_at, presence_offline = row
+    (
+        device_id,
+        display_name,
+        owner_account_id,
+        bound_at,
+        require_confirm,
+        last_seen_at,
+        presence_offline,
+        last_connected_at,
+        platform,
+        trusted_at,
+        trust_source,
+    ) = row
     return DeviceRecord(
         device_id=str(device_id),
         display_name=str(display_name),
@@ -209,6 +253,10 @@ def _device_from_row(row: tuple[Any, ...]) -> DeviceRecord:
         require_confirm=bool(require_confirm),
         last_seen_at=None if last_seen_at is None else float(last_seen_at),
         presence_offline=bool(presence_offline),
+        last_connected_at=None if last_connected_at is None else float(last_connected_at),
+        platform=str(platform or "unknown"),
+        trusted_at=None if trusted_at is None else float(trusted_at),
+        trust_source=str(trust_source or ""),
     )
 
 
@@ -297,6 +345,20 @@ def _request_from_row(row: tuple[Any, ...]) -> AccessRequest:
     )
 
 
+def _wall_row(record: WallRecord) -> tuple[Any, ...]:
+    return (record.wall_id, record.account_id, record.bound_by_device_id, record.bound_at)
+
+
+def _wall_from_row(row: tuple[Any, ...]) -> WallRecord:
+    wall_id, account_id, bound_by_device_id, bound_at = row
+    return WallRecord(
+        wall_id=str(wall_id),
+        account_id=str(account_id),
+        bound_by_device_id=str(bound_by_device_id),
+        bound_at=str(bound_at),
+    )
+
+
 def _audit_row(event: AuditEvent) -> tuple[Any, ...]:
     return (
         event.ts,
@@ -333,6 +395,7 @@ class AccountStore:
         self.tokens: dict[str, TokenRecord] = {}
         self.grants: dict[str, Grant] = {}
         self.requests: dict[str, AccessRequest] = {}
+        self.walls: dict[str, WallRecord] = {}
         self.audit: list[AuditEvent] = []
         self.kicked_sessions: list[str] = []
         self.database: AccountDatabase | None = None
@@ -372,6 +435,9 @@ class AccountStore:
         for row in self.database.load_requests():
             request = _request_from_row(row)
             self.requests[request.request_id] = request
+        for row in self.database.load_walls():
+            wall = _wall_from_row(row)
+            self.walls[wall.wall_id] = wall
         self.audit = [_audit_from_row(row) for row in self.database.load_audit()]
 
     # -------------------------------------------------------------- 落盘同步
@@ -394,6 +460,10 @@ class AccountStore:
     def _save_requests(self, requests: list[AccessRequest]) -> None:
         if self.database is not None:
             self.database.save_requests([_request_row(item) for item in requests])
+
+    def _save_walls(self, walls: list[WallRecord]) -> None:
+        if self.database is not None:
+            self.database.save_walls([_wall_row(item) for item in walls])
 
     def save_device(self, device: DeviceRecord) -> None:
         """供服务层直接改字段后同步单台设备."""
@@ -442,24 +512,94 @@ class AccountStore:
         self.revoke_account_tokens(account.account_id)
 
     # ------------------------------------------------------------------ 设备
-    def upsert_device(self, device_id: str, display_name: str) -> DeviceRecord:
-        """登记设备; 已存在则更新显示名, 不覆盖所有者."""
+    def upsert_device(self, device_id: str, display_name: str, platform: str = "unknown") -> DeviceRecord:
+        """登记设备; 已存在则更新显示名与平台, 不覆盖所有者."""
         device = self.devices.get(device_id)
         if device is None:
-            device = DeviceRecord(device_id=device_id, display_name=display_name)
+            device = DeviceRecord(device_id=device_id, display_name=display_name, platform=normalize_platform(platform))
         else:
             device.display_name = display_name
+            device.platform = normalize_platform(platform)
         self._save_devices([device])
         self.devices[device_id] = device
         return device
 
     def bind_device(self, device_id: str, account_id: str) -> DeviceRecord:
-        """绑定设备; 已绑定其他账号时拒绝, 由服务层翻译为失败结果."""
+        """绑定设备; 已绑定其他账号时拒绝, 由服务层翻译为失败结果.
+
+        每次绑定都回到「需确认」, 信任状态必须由所有者在绑定后显式选择.
+        """
         device = self.devices[device_id]
         device.owner_account_id = account_id
         device.bound_at = _iso(time.time())
+        device.require_confirm = True
         self._save_devices([device])
         return device
+
+    def ensure_device_bound(
+        self, device_id: str, account_id: str, display_name: str, platform: str = "unknown"
+    ) -> DeviceRecord:
+        """服务端登录时确保设备归属该账号, 不重置既有信任状态.
+
+        与 `bind_device` 的区别: 已归属同一账号时不改动 `require_confirm`, 避免每次登录把信任撤销.
+        已归属其他账号时不改动任何字段, 由服务层返回冲突.
+        """
+        normalized = normalize_platform(platform)
+        device = self.devices.get(device_id)
+        if device is None:
+            device = DeviceRecord(
+                device_id=device_id,
+                display_name=display_name,
+                owner_account_id=account_id,
+                bound_at=_iso(time.time()),
+                platform=normalized,
+            )
+        elif device.owner_account_id is None:
+            device.owner_account_id = account_id
+            device.bound_at = _iso(time.time())
+            device.display_name = display_name or device.display_name
+            device.platform = normalized
+        elif device.owner_account_id == account_id:
+            if display_name:
+                device.display_name = display_name
+            device.platform = normalized
+        else:
+            return device
+        self._save_devices([device])
+        self.devices[device_id] = device
+        return device
+
+    def device_of(self, device_id: str) -> DeviceRecord | None:
+        """按设备标识取设备记录."""
+        return self.devices.get(device_id)
+
+    def set_device_platform(self, device_id: str, platform: str) -> bool:
+        """上报设备平台; 设备不存在时忽略, 返回值表示是否命中."""
+        device = self.devices.get(device_id)
+        if device is None:
+            return False
+        device.platform = normalize_platform(platform)
+        self._save_devices([device])
+        return True
+
+    def set_device_trust(self, device_id: str, trusted: bool, source: str = "") -> DeviceRecord | None:
+        """设置或撤销受信并记录来源与时间; 撤销时清空受信来源."""
+        device = self.devices.get(device_id)
+        if device is None:
+            return None
+        device.require_confirm = not trusted
+        device.trusted_at = time.time() if trusted else None
+        device.trust_source = source if trusted else ""
+        self._save_devices([device])
+        return device
+
+    def mark_device_connected(self, device_id: str, now: float | None = None) -> None:
+        """记录设备最近一次会话建立时间; 设备不存在时忽略."""
+        device = self.devices.get(device_id)
+        if device is None:
+            return
+        device.last_connected_at = time.time() if now is None else now
+        self._save_devices([device])
 
     def unbind_device(self, device_id: str) -> None:
         """解绑设备并吊销其全部令牌."""
@@ -469,11 +609,15 @@ class AccountStore:
         self._save_devices([device])
         self.revoke_device_tokens(device_id)
 
-    def record_presence(self, device_id: str, state: str = "online", now: float | None = None) -> bool:
-        """记录设备级心跳; 只影响在线状态, 不参与鉴权."""
+    def record_presence(
+        self, device_id: str, state: str = "online", now: float | None = None, platform: str = ""
+    ) -> bool:
+        """记录设备级心跳; 只影响在线状态, 不参与鉴权; 上报平台时同步平台字段."""
         device = self.devices.get(device_id)
         if device is None:
             return False
+        if platform:
+            device.platform = normalize_platform(platform)
         current = time.time() if now is None else now
         if state == "offline":
             device.presence_offline = True
@@ -670,16 +814,65 @@ class AccountStore:
         self._save_requests(changed)
         return expired
 
+    # ------------------------------------------------------------------ 屏幕墙
+    def bind_wall(self, wall_id: str, account_id: str, device_id: str) -> tuple[str, str]:
+        """登记屏幕墙归属, 返回 (created/unchanged/conflict, bound_at).
+
+        同墙同账号重复上报幂等且不刷新 bound_at; 同墙换账号返回 conflict 并保留原绑定,
+        不做静默覆盖. 成功与拒绝都写一条 `wall.bind` 审计, 冲突事后可查.
+        """
+        existing = self.walls.get(wall_id)
+        if existing is not None:
+            same_account = existing.account_id == account_id
+            self.append_audit(
+                "wall.bind",
+                account_id,
+                wall_id,
+                "ok" if same_account else "fail",
+                wall_id=wall_id,
+                account_id=account_id,
+                bound_by_device_id=device_id,
+                reason="unchanged" if same_account else "conflict",
+                existing_account_id=existing.account_id,
+            )
+            status = "unchanged" if same_account else "conflict"
+            return status, existing.bound_at
+        bound_at = _iso(time.time())
+        record = WallRecord(
+            wall_id=wall_id,
+            account_id=account_id,
+            bound_by_device_id=device_id,
+            bound_at=bound_at,
+        )
+        self._save_walls([record])
+        self.walls[wall_id] = record
+        self.append_audit(
+            "wall.bind",
+            account_id,
+            wall_id,
+            "ok",
+            wall_id=wall_id,
+            account_id=account_id,
+            bound_by_device_id=device_id,
+            reason="created",
+        )
+        return "created", bound_at
+
+    def wall_owner(self, wall_id: str) -> str:
+        """返回屏幕墙归属账号; 未登记返回空串."""
+        record = self.walls.get(wall_id)
+        return "" if record is None else record.account_id
+
     # ------------------------------------------------------------------ 审计
-    def append_audit(self, event: str, actor: str, target: str, result: str, **detail: Any) -> None:
-        """追加审计事件; detail 中不得出现口令与令牌明文."""
+    def append_audit(self, event: str, actor: str, target: str, result: str, *, ts: str = "", **detail: Any) -> None:
+        """追加审计事件; detail 中不得出现口令与令牌明文, 写盘前按统一规则再脱敏一次."""
         record = AuditEvent(
-            ts=_iso(time.time()),
+            ts=ts or _iso(time.time()),
             event=event,
             actor=actor,
             target=target,
             result=result,
-            detail=detail,
+            detail=redact(dict(detail)),
         )
         self.audit.append(record)
         if self.database is not None:
@@ -691,3 +884,31 @@ class AccountStore:
         if since:
             items = [item for item in items if item.ts >= since]
         return items
+
+    def audit_of_account(self, account_id: str, since: str = "") -> list[AuditEvent]:
+        """按账号过滤审计: 覆盖账号自身事件与名下设备的会话事件."""
+        device_ids = {device.device_id for device in self.devices_of_account(account_id)}
+        items = [
+            item
+            for item in self.audit
+            if item.actor == account_id
+            or item.target == account_id
+            or item.target in device_ids
+            or item.detail.get("device_id") in device_ids
+            or item.detail.get("peer_device_id") in device_ids
+            or item.detail.get("account_id") == account_id
+        ]
+        if since:
+            items = [item for item in items if item.ts >= since]
+        return items
+
+    def message_read_until(self, account_id: str) -> str:
+        """账号级已读水位; 未设置或纯内存存储时返回空串."""
+        if self.database is None:
+            return ""
+        return self.database.message_read_until(account_id)
+
+    def set_message_read_until(self, account_id: str, read_until: str) -> None:
+        """写入账号级已读水位, 安卓与桌面共用; 纯内存存储下为空操作."""
+        if self.database is not None:
+            self.database.set_message_read_until(account_id, read_until)

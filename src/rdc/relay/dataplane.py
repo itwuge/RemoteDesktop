@@ -14,7 +14,7 @@
 帧格式与信令一致: 4 字节大端无符号长度 + 负载.
 首个帧是明文握手的 JSON, 之后每帧都是不透明密文, 中继只转发不解析.
 
-握手帧字段: plane="data"、v=1、type="relay_hello"、relay_token、session_id、role。
+握手帧字段: plane="data"、v=1、type="relay_hello"、relay_token、session_id、role、account_id（仅预览令牌需要）。
 role 取 publisher（被控端上行, 受预算限速）或 subscriber（控制端下行）。
 """
 
@@ -37,6 +37,11 @@ from rdc.relay.server import send_frame
 # 超过按协议错误断开, 不缓冲, 防止内存被撑爆
 DATA_MAX_FRAME_BYTES = 6 << 20
 ROLES = ("publisher", "subscriber")
+# 对端未接入时最多等这么久再丢帧: 覆盖"订阅端先到、发布端几毫秒后到"的常见时序,
+# 同时保证对端始终不出现时不会把发送方长期挂住
+PEER_WAIT_SECONDS = 2.0
+# 收帧循环内的吊销复核间隔: 与账号库探测缓存同频, 每帧只做一次内存判断, 不额外读盘
+REVOCATION_CHECK_INTERVAL_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -47,12 +52,18 @@ class RelayGrant:
     :param budget_kbps: 授予的预算, 单位 kbps
     :param expires_at: 过期时刻, epoch 秒
     :param scope: control 正式会话 / view 屏幕墙预览(只允许订阅)
+    :param account_id: 签发时绑定的账号, 预览令牌握手时必须一致
+    :param wall_id: 绑定的屏幕墙, 仅预览令牌使用
+    :param device_id: 申请方设备, 用于运行期复核账号令牌是否已吊销
     """
 
     session_id: str
     budget_kbps: int
     expires_at: float
     scope: str = "control"
+    account_id: str = ""
+    wall_id: str = ""
+    device_id: str = ""
 
 
 class TokenBucket:
@@ -92,13 +103,19 @@ class SessionStats:
     bytes_forwarded: int = 0
     frames_forwarded: int = 0
     frames_dropped: int = 0
+    budget_exceeded: int = 0
     peer_waiting: bool = False
+    # 1 秒滚动窗口, 用于发现"实际线上码率超过目标档"的越界
+    window_started: float = field(default_factory=time.monotonic)
+    window_bytes: int = 0
+    last_exceed_log: float = 0.0
 
 
 @dataclass
 class _Endpoint:
     sock: socket.socket
     role: str
+    token: str = ""
     write_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -123,18 +140,36 @@ class RelayDataPlane:
 
     :param resolve_grant: 由 relay_token 取授予记录, 返回 None 表示令牌无效或过期
     :param max_sessions: 允许的并发数据会话上限
+    :param target_kbps: 固定档目标码率, 0 表示不做越界统计
+    :param token_active: 运行期复核令牌是否仍然有效; 为空时只看授予记录是否存在
     """
 
-    def __init__(self, resolve_grant: Callable[[str], RelayGrant | None], max_sessions: int) -> None:
+    def __init__(
+        self,
+        resolve_grant: Callable[[str], RelayGrant | None],
+        max_sessions: int,
+        target_kbps: int = 0,
+        token_active: Callable[[str], bool] | None = None,
+    ) -> None:
         self._resolve = resolve_grant
         self._max_sessions = max_sessions
+        self._target_kbps = target_kbps
+        self._token_active = token_active or (lambda token: resolve_grant(token) is not None)
         self._sessions: dict[str, _Session] = {}
         self._lock = threading.Lock()
         self._closed = threading.Event()
         self.rejected_tokens = 0
         self.rejected_sessions = 0
+        # 被会话结束或令牌吊销强制断开的计数, 供健康检查与证据核对
+        self.revoked_tokens = 0
+        self.revoked_sessions = 0
         # 累计计数: 会话断开后仍保留, 供健康检查与证据核对
-        self._totals = {"bytes_forwarded": 0, "frames_forwarded": 0, "frames_dropped": 0}
+        self._totals = {
+            "bytes_forwarded": 0,
+            "frames_forwarded": 0,
+            "frames_dropped": 0,
+            "budget_exceeded": 0,
+        }
 
     # ------------------------------------------------------------------ 握手
     def parse_hello(self, payload: bytes) -> dict[str, Any] | None:
@@ -156,7 +191,7 @@ class RelayDataPlane:
         session_id = str(hello["session_id"])
         role = str(hello["role"])
 
-        endpoint = _Endpoint(sock=connection, role=role)
+        endpoint = _Endpoint(sock=connection, role=role, token=str(hello.get("relay_token") or ""))
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
@@ -171,8 +206,7 @@ class RelayDataPlane:
                 self._reject(connection, "AUTH_FAILED", f"该会话已有 {role}")
                 return
             setattr(session, role, endpoint)
-            if session.publisher is not None and session.subscriber is not None:
-                session.ready.set()
+            paired = session.publisher is not None and session.subscriber is not None
 
         log_event(
             "relay.dataplane",
@@ -193,7 +227,10 @@ class RelayDataPlane:
                 "budget_kbps": session.budget_kbps,
             },
         )
-        session.ready.wait(timeout=30.0)
+        if paired:
+            # 配对信号放到 relay_ready 之后: 唤醒等待方时对端必然已经能收到数据帧
+            session.ready.set()
+        # 不在此处等对端: 等待放在收帧循环里, 未配对时按需短等并丢帧, 不阻塞首帧读取也不断链
         try:
             self._pump(connection, endpoint, session)
         finally:
@@ -214,13 +251,22 @@ class RelayDataPlane:
         if grant is None or grant.expires_at <= time.time():
             self.rejected_tokens += 1
             return "relay_token 无效或已过期"
+        if not self._token_active(token):
+            # 授予还在但账号令牌已吊销: 与无效令牌同样拒绝, 不给吊销后的连接开口子
+            self.rejected_tokens += 1
+            return "relay_token 已失效"
         if grant.session_id != session_id:
             self.rejected_tokens += 1
             return "relay_token 与会话不匹配"
-        if grant.scope == "view" and role != "subscriber":
+        if grant.scope == "view":
             # 预览令牌只读: 只能订阅, 不能作为发布端推流
-            self.rejected_tokens += 1
-            return "预览令牌只允许订阅方向"
+            if role != "subscriber":
+                self.rejected_tokens += 1
+                return "预览令牌只允许订阅方向"
+            # 预览令牌绑定账号: 数据面必须用同一账号出示, 账号不符直接拒绝
+            if not grant.account_id or str(hello.get("account_id") or "") != grant.account_id:
+                self.rejected_tokens += 1
+                return "预览令牌与账号不匹配"
         return grant
 
     def _reject(self, connection: socket.socket, code: str, message: str) -> None:
@@ -234,8 +280,22 @@ class RelayDataPlane:
                 connection.close()
 
     def _pump(self, connection: socket.socket, endpoint: _Endpoint, session: _Session) -> None:
-        """循环读帧并转发给对端; 发布方向按预算限速, 超预算丢帧不缓冲."""
+        """循环读帧并转发给对端; 发布方向按预算限速, 超预算丢帧不缓冲.
+
+        对端尚未接入时不丢连接: 首帧短暂等待配对(有上限), 仍未配对就丢弃该帧并继续读下一帧,
+        既不缓冲也不断开已通过令牌校验的连接.
+        """
+        waited_peer = False
+        reported_unpaired = False
+        next_check = time.monotonic() + REVOCATION_CHECK_INTERVAL_S
         while not self._closed.is_set():
+            now = time.monotonic()
+            if now >= next_check:
+                next_check = now + REVOCATION_CHECK_INTERVAL_S
+                if not self._token_active(endpoint.token):
+                    # 会话结束或令牌吊销: 立即断开连接, 不再转发任何帧
+                    self.revoke_token(endpoint.token, "授权已失效")
+                    return
             if session.expires_at and time.time() > session.expires_at:
                 # 授予到期即断开, 不给过期令牌留下长期转发通道
                 return
@@ -251,8 +311,26 @@ class RelayDataPlane:
                     self._totals["frames_dropped"] += 1
                 continue
             peer = session.counter(endpoint)
+            if peer is None and not waited_peer and not session.ready.is_set():
+                # 只等第一次: 对端始终不出现时后续帧直接丢弃, 不把发送方反复挂住
+                waited_peer = True
+                session.ready.wait(PEER_WAIT_SECONDS)
+                peer = session.counter(endpoint)
             if peer is None:
-                return
+                # 对端未配对: 丢帧计数并继续读, 绝不因此断开已通过令牌校验的连接
+                session.stats.frames_dropped += 1
+                with self._lock:
+                    self._totals["frames_dropped"] += 1
+                if not reported_unpaired:
+                    reported_unpaired = True
+                    log_event(
+                        "relay.dataplane",
+                        "frame.dropped_unpaired",
+                        level="WARNING",
+                        session_id=session.session_id,
+                        role=endpoint.role,
+                    )
+                continue
             try:
                 with peer.write_lock:
                     peer.sock.sendall(struct.pack(">I", len(payload)) + payload)
@@ -263,6 +341,35 @@ class RelayDataPlane:
             with self._lock:
                 self._totals["bytes_forwarded"] += len(payload)
                 self._totals["frames_forwarded"] += 1
+            self._check_budget(session, endpoint.role, len(payload))
+
+    def _check_budget(self, session: _Session, role: str, size: int) -> None:
+        """按 1 秒窗口统计发布方向线上码率, 超过目标档时计数并限频记日志."""
+        if role != "publisher" or self._target_kbps <= 0:
+            return
+        stats = session.stats
+        now = time.monotonic()
+        elapsed = now - stats.window_started
+        if elapsed >= 1.0:
+            measured_kbps = int(stats.window_bytes * 8 / 1000 / elapsed)
+            if measured_kbps > self._target_kbps:
+                stats.budget_exceeded += 1
+                with self._lock:
+                    self._totals["budget_exceeded"] += 1
+                if now - stats.last_exceed_log >= 10.0:
+                    stats.last_exceed_log = now
+                    log_event(
+                        "relay.dataplane",
+                        "budget.exceeded",
+                        level="WARNING",
+                        session_id=session.session_id,
+                        measured_kbps=measured_kbps,
+                        target_kbps=self._target_kbps,
+                        budget_kbps=session.budget_kbps,
+                    )
+            stats.window_started = now
+            stats.window_bytes = 0
+        stats.window_bytes += size
 
     def _detach(self, session: _Session, endpoint: _Endpoint) -> None:
         empty = False
@@ -285,6 +392,51 @@ class RelayDataPlane:
         )
 
     # ------------------------------------------------------------------ 观测与生命周期
+    def revoke_token(self, token: str, reason: str = "授权已撤销") -> int:
+        """立即断开使用该令牌的数据面连接, 并停止后续转发; 返回断开的端点数.
+
+        会话结束、授权回收、令牌吊销都会走到这里。先摘除端点再关闭套接字,
+        保证已经进入转发路径的帧最多只发一帧, 不会在断开后继续双向转发。
+        """
+        if not token:
+            return 0
+        dropped: list[tuple[_Session, _Endpoint]] = []
+        emptied: list[_Session] = []
+        with self._lock:
+            for session in list(self._sessions.values()):
+                endpoints = (session.publisher, session.subscriber)
+                for endpoint in endpoints:
+                    if endpoint is None or endpoint.token != token:
+                        continue
+                    setattr(session, endpoint.role, None)
+                    dropped.append((session, endpoint))
+                if session.publisher is None and session.subscriber is None and session not in emptied:
+                    emptied.append(session)
+            for session in emptied:
+                self._sessions.pop(session.session_id, None)
+            if dropped:
+                self.revoked_tokens += 1
+                self.revoked_sessions += len(emptied)
+        for session, endpoint in dropped:
+            with suppress(OSError):
+                endpoint.sock.shutdown(socket.SHUT_RDWR)
+            with suppress(OSError):
+                endpoint.sock.close()
+            session.ready.set()
+        if dropped:
+            log_event(
+                "relay.dataplane",
+                "session.revoked",
+                level="WARNING",
+                reason=reason,
+                session_ids=[session.session_id for session, _ in dropped],
+                roles=[endpoint.role for _, endpoint in dropped],
+                frames_forwarded=sum(session.stats.frames_forwarded for session, _ in dropped),
+                bytes_forwarded=sum(session.stats.bytes_forwarded for session, _ in dropped),
+                sessions_closed=len(emptied),
+            )
+        return len(dropped)
+
     def snapshot(self) -> dict[str, Any]:
         """返回可公开的统计, 不含令牌与内容."""
         with self._lock:
@@ -297,12 +449,16 @@ class RelayDataPlane:
             "active_subscribers": sum(1 for item in sessions if item.subscriber is not None),
             "rejected_tokens": self.rejected_tokens,
             "rejected_sessions": self.rejected_sessions,
+            "revoked_tokens": self.revoked_tokens,
+            "revoked_sessions": self.revoked_sessions,
             "bytes_forwarded": sum(item.stats.bytes_forwarded for item in sessions),
             "frames_forwarded": sum(item.stats.frames_forwarded for item in sessions),
             "frames_dropped": sum(item.stats.frames_dropped for item in sessions),
+            "budget_exceeded": sum(item.stats.budget_exceeded for item in sessions),
             "total_bytes_forwarded": totals["bytes_forwarded"],
             "total_frames_forwarded": totals["frames_forwarded"],
             "total_frames_dropped": totals["frames_dropped"],
+            "total_budget_exceeded": totals["budget_exceeded"],
         }
 
     def close(self) -> None:

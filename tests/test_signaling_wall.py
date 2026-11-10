@@ -26,12 +26,19 @@ def _authenticate(server: InMemorySignalingServer, identity: DeviceIdentity) -> 
     assert server.handle(auth)[0]["type"] == "auth_ok"
 
 
-def _server(deliveries: list[tuple[str, dict]] | None = None) -> InMemorySignalingServer:
+def _server(
+    deliveries: list[tuple[str, dict]] | None = None, accounts: dict[str, str] | None = None
+) -> InMemorySignalingServer:
     sink = deliveries if deliveries is not None else []
-    return InMemorySignalingServer(
+    mapping = accounts or {}
+    server = InMemorySignalingServer(
         deliver=lambda device_id, envelope: sink.append((device_id, envelope)) or True,
-        account_of=lambda device_id: "acct-1",
+        account_of=lambda device_id: mapping.get(device_id, "acct-1"),
     )
+    # 墙归属 acct-1: 未登记的墙一律按无权处理
+    server.register_wall("wall-a", "acct-1")
+    server.register_wall("wall-b", "acct-1")
+    return server
 
 
 def test_wall_focus_returns_token_bound_to_connection_identity():
@@ -153,3 +160,78 @@ def test_wall_target_validation_rejects_bad_cell():
     ]
     assert response["type"] == "error"
     assert response["payload"]["code"] == "INVALID_MESSAGE"
+
+
+def test_wall_preview_and_focus_reject_other_account_wall():
+    """墙归属按账号校验: 其它账号既不能预览, 也不能聚焦或抢占他人墙."""
+    alice = DeviceIdentity.generate()
+    bob = DeviceIdentity.generate()
+    server = _server(accounts={alice.device_id: "acct-a", bob.device_id: "acct-b"})
+    server.register_wall("other-users-wall", "acct-a")
+    _authenticate(server, alice)
+    _authenticate(server, bob)
+
+    owned = server.handle(
+        build_envelope(alice, "wall_preview", {"wall_id": "other-users-wall", "cell": 0}),
+        alice.device_id,
+    )[0]
+    assert owned["type"] == "wall_preview_granted"
+
+    preview = server.handle(
+        build_envelope(bob, "wall_preview", {"wall_id": "other-users-wall", "cell": 0}),
+        bob.device_id,
+    )[0]
+    assert preview["type"] == "error"
+    assert preview["payload"]["code"] == "SCOPE_INSUFFICIENT"
+
+    hijack = server.handle(
+        build_envelope(bob, "wall_focus", {"wall_id": "other-users-wall", "cell": 1}),
+        bob.device_id,
+    )[0]
+    assert hijack["type"] == "error"
+    assert hijack["payload"]["code"] == "SCOPE_INSUFFICIENT"
+
+
+def test_wall_unfocus_only_releases_own_focus_token():
+    """聚焦令牌只能由持有人释放, 其它账号 unfocus 不得生效."""
+    alice = DeviceIdentity.generate()
+    bob = DeviceIdentity.generate()
+    server = _server(accounts={alice.device_id: "acct-a", bob.device_id: "acct-b"})
+    server.register_wall("other-users-wall", "acct-a")
+    _authenticate(server, alice)
+    _authenticate(server, bob)
+
+    focus = server.handle(
+        build_envelope(alice, "wall_focus", {"wall_id": "other-users-wall", "cell": 0}),
+        alice.device_id,
+    )[0]
+    assert focus["type"] == "wall_focus_granted"
+    token = str(focus["payload"]["focus_token"])
+
+    denied = server.handle(
+        build_envelope(bob, "wall_unfocus", {"wall_id": "other-users-wall"}),
+        bob.device_id,
+    )[0]
+    assert denied["type"] == "error"
+    assert denied["payload"]["code"] == "SCOPE_INSUFFICIENT"
+    assert server.resolve_relay_token(token) is not None
+
+    released = server.handle(
+        build_envelope(alice, "wall_unfocus", {"wall_id": "other-users-wall"}),
+        alice.device_id,
+    )[0]
+    assert released["payload"]["released"] is True
+    assert server.resolve_relay_token(token) is None
+
+
+def test_wall_without_owner_is_denied_by_default():
+    """未建立归属的墙不签发任何令牌, 避免注册即可操作任意墙."""
+    alice = DeviceIdentity.generate()
+    server = _server(accounts={alice.device_id: "acct-a"})
+    _authenticate(server, alice)
+    response = server.handle(
+        build_envelope(alice, "wall_preview", {"wall_id": "unregistered-wall", "cell": 0}),
+        alice.device_id,
+    )[0]
+    assert response["type"] == "error"
+    assert response["payload"]["code"] == "SCOPE_INSUFFICIENT"

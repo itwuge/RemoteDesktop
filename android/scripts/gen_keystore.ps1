@@ -1,12 +1,12 @@
 ﻿# ==========================================================================================
 # 文件        : gen_keystore.ps1
 # 所属目录    : android/scripts/
-# 文件用途    : 生成侧载 APK 用的发布签名库, 并写出 android/keystore.properties
+# 文件用途    : 生成侧载 APK 用的发布签名库, 并写出仓库外的 D:\RDC-Build\secrets\keystore.properties
 # 架构定位    : 构建与发布工具, 不属于产品运行时代码
 # 核心功能    : PKCS12 + RSA 3072 + 有效期 25 年; 口令经环境变量传给 keytool, 不写进脚本与仓库
 # 职责边界    : 只生成密钥与签名配置; 不构建 APK, 不安装, 不上传
 # 运行环境    : Windows PowerShell 5.1+ 且 keytool 在 PATH 中 (JDK 17)
-# 依赖关系    : 被 android/app/build.gradle.kts 读取的 keystore.properties
+# 依赖关系    : 被 android/app/build.gradle.kts 读取的仓库外 keystore.properties
 # ==========================================================================================
 
 [CmdletBinding()]
@@ -79,7 +79,11 @@ try {
     Remove-Item Env:\RDC_KS_PASS -ErrorAction SilentlyContinue
 }
 
-$propertiesPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'keystore.properties'
+$propertiesPath = Join-Path $env:RDC_BUILD_ROOT 'secrets\keystore.properties'
+$propertiesDir = Split-Path -Parent $propertiesPath
+if (-not (Test-Path $propertiesDir)) {
+    New-Item -ItemType Directory -Path $propertiesDir -Force | Out-Null
+}
 $escapedPath = $KeystorePath.Replace('\', '/')
 $lines = @(
     '# 由 android/scripts/gen_keystore.ps1 生成; 含口令, 不入库、不进日志、不进构建摘要',
@@ -91,5 +95,5 @@ $lines = @(
 Set-Content -Path $propertiesPath -Value $lines -Encoding UTF8
 
 Write-Host "签名库已生成: $KeystorePath"
-Write-Host "签名配置已写出: $propertiesPath"
-Write-Host '请勿把 keystore.properties 或 .p12 提交到版本库; 丢失签名库将导致无法升级安装。'
+Write-Host "签名配置已写出: $propertiesPath (仓库外, 仅当前用户可读)"
+Write-Host '请勿把签名配置或 .p12 提交到版本库; 丢失签名库将导致无法升级安装。'

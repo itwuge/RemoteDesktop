@@ -28,11 +28,12 @@ from PySide6.QtWidgets import (
 from rdc.commands import accounts, wall
 from rdc.core.result import CommandResult
 from rdc.ui.components import EmptyState, WallCellButton, chip, fade_in
+from rdc.ui.copy import profile_text
 from rdc.ui.pages.base import PageBase
 
 CELL_STATE_TEXT = {
     "preview": "预览",
-    "focus": "聚焦 4K60",
+    "focus": "聚焦 4K 60 帧",
     "paused": "已暂停",
 }
 
@@ -44,13 +45,14 @@ class WallPage(PageBase):
         super().__init__(
             "wall",
             "屏幕墙",
-            "预览格 1 个解码单位, 聚焦格 4 个单位, 默认预算 12; 4K60 同时最多 1 路.",
+            "预览格 1 个解码单位, 聚焦格 4 个单位, 默认预算 12; 4K 60 帧同时最多 1 路.",
         )
         self._wall_id: str | None = None
         self._layout = 4
         self._cell_buttons: list[WallCellButton] = []
         self._build()
         self.body.setSpacing(12)
+        self._update_summary()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -64,15 +66,22 @@ class WallPage(PageBase):
         toolbar_layout.setSpacing(6)
         self.layout_buttons: list[QPushButton] = []
         for count in (1, 4, 9, 16):
-            button = self.button(f"{count} 格", partial(self._on_layout, count))
+            button = self.button(f"{count} 路", partial(self._on_layout, count))
             button.setProperty("seg", True)
             button.setCheckable(True)
             button.setChecked(count == 4)
             self.layout_buttons.append(button)
             toolbar_layout.addWidget(button)
+        self.online_label = chip("0 / 0 路在线")
+        toolbar_layout.addWidget(self.online_label)
+        self.layout_label = QLabel("布局：2 × 2")
+        self.layout_label.setObjectName("cardMeta")
+        toolbar_layout.addWidget(self.layout_label)
         toolbar_layout.addStretch(1)
         self.budget_label = chip("未创建 · 预算 12 单位")
         toolbar_layout.addWidget(self.budget_label)
+        toolbar_layout.addWidget(self.button("刷新在线状态", self._on_refresh, icon="refresh-cw"))
+        self.header_actions.addWidget(self.button("关闭屏幕墙", self._on_close, icon="x"))
         self.body.addWidget(toolbar)
 
         self.degrade_label = QLabel("")
@@ -83,9 +92,9 @@ class WallPage(PageBase):
         self.content_stack = QStackedWidget()
         self.empty = EmptyState(
             "wall",
-            "屏幕墙尚未创建",
-            "把多台在线设备铺成宫格, 预览低码率画面; 选中任意一格可升级为 4K60 聚焦.",
-            action_text="创建 4 格屏幕墙",
+            "屏幕墙当前没有画面",
+            "把多台在线设备铺成宫格, 预览低码率画面; 选中任意一格可升级为 4K 60 帧聚焦.",
+            action_text="创建屏幕墙",
             action_icon="layout-grid",
             action=lambda: self._on_layout(4),
         )
@@ -105,8 +114,6 @@ class WallPage(PageBase):
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
-        bottom.addWidget(self.button("刷新", self._on_refresh, icon="refresh-cw"))
-        bottom.addWidget(self.button("关闭屏幕墙", self._on_close, icon="x"))
         bottom.addWidget(self.muted("未连接真实会话时仅演示预算与布局, 不产生画面."))
         bottom.addStretch(1)
         self.body.addLayout(bottom)
@@ -118,6 +125,7 @@ class WallPage(PageBase):
             self._wall_id = str(result.data.get("wall_id", self._wall_id or ""))
             self._layout = count
             self._sync_layout_buttons(count)
+            self._update_summary()
             self._render(result)
         self.report(f"屏幕墙 {count} 格", result)
 
@@ -138,6 +146,7 @@ class WallPage(PageBase):
             self.budget_label.setText("未创建 · 预算 12 单位")
             self.degrade_label.setText("")
             self.content_stack.setCurrentIndex(0)
+            self._update_summary()
         self.report("关闭屏幕墙", result)
 
     def _on_focus(self, cell: int) -> None:
@@ -169,17 +178,28 @@ class WallPage(PageBase):
         )
         steps = data.get("degrade_steps") or []
         if steps:
-            names = {"reduce_cells": "减格", "lower_preview": "预览降 360p10", "pause_unfocused": "暂停未聚焦格"}
+            names = {"reduce_cells": "减格", "lower_preview": "预览降至 360P 10 帧", "pause_unfocused": "暂停未聚焦格"}
             self.degrade_label.setText("已降级: " + " → ".join(names.get(step, step) for step in steps))
         else:
             self.degrade_label.setText("")
         self.content_stack.setCurrentIndex(1)
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        """在线路数与布局说明只读设备列表与当前布局, 不新增命令."""
+        result = accounts.list_devices()
+        items = (result.data or {}).get("items", []) if result.ok else []
+        online = sum(1 for item in items if item.get("online"))
+        total = len(items) if self._wall_id is None else self._layout
+        self.online_label.setText(f"{min(online, total)} / {total} 路在线")
+        grid = {1: "1 × 1", 4: "2 × 2", 9: "3 × 3", 16: "4 × 4"}
+        self.layout_label.setText(f"布局：{grid.get(self._layout, '2 × 2')}")
 
     def _cell_text(self, index: int, cell: dict[str, object]) -> str:
         names = self._device_names()
         name = names[index] if index < len(names) else "未绑定设备"
         state = CELL_STATE_TEXT.get(str(cell.get("state", "preview")), "预览")
-        profile = str(cell.get("preview_profile", "preview_480p15"))
+        profile = profile_text(str(cell.get("preview_profile", "preview_480p15"))).removeprefix("预览 ")
         return f"格 {index + 1} · {name}\n{state} · {profile}"
 
     @staticmethod

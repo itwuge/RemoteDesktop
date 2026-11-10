@@ -1,0 +1,47 @@
+# 文件: rdc-stun.service.tmpl | 用途: STUN 单元模板 | 边界: 由 deploy.py 替换占位符后安装
+[Unit]
+Description=RDC STUN binding service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+ExecStart=@PYTHON@ @PREFIX@/app/stun_server.py --host 0.0.0.0 --port @PORT@
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# 只读文件系统, 进程无需任何可写路径(PrivateTmp 提供私有 /tmp)
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitNOFILE=512
+MemoryMax=128M
+CPUQuota=50%
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rdc-stun
+
+[Install]
+WantedBy=multi-user.target

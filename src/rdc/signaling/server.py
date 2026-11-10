@@ -24,6 +24,7 @@ import os
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -36,8 +37,10 @@ from rdc.core.errors import (
     PROTOCOL_VERSION_UNSUPPORTED,
     RELAY_FULL,
     SCOPE_INSUFFICIENT,
+    WALL_OWNERSHIP_CONFLICT,
 )
-from rdc.core.ids import iso_after
+from rdc.core.ids import iso_after, now_iso
+from rdc.core.logging import log_event
 from rdc.crypto.identity import DeviceIdentity, b64decode, b64encode, device_id_from_public_key, verify_signature
 from rdc.signaling.envelope import ProtocolError, build_envelope, validate_envelope, verify_envelope
 from rdc.signaling.messages import ROUTED_TYPES, SERVER_TYPES, SESSION_PLANE_TYPES
@@ -49,6 +52,10 @@ SESSION_RETENTION_S = 60.0
 SESSION_IDLE_TTL_S = 300.0
 # presence 心跳 30 秒一条, 90 秒未收到判离线
 PRESENCE_ONLINE_WINDOW_S = 90.0
+# control 授予默认有效期: 客户端被杀后中继名额最多占用这么久, 可由配置覆盖
+DEFAULT_CONTROL_GRANT_TTL_S = 90
+# 清理周期: 不依赖入站消息, 保证无流量时也能回收过期授予与残留会话
+PURGE_INTERVAL_S = 15.0
 PRESENCE_UNKNOWN = "unknown"
 PRESENCE_ONLINE = "online"
 PRESENCE_OFFLINE = "offline"
@@ -56,6 +63,11 @@ PRESENCE_OFFLINE = "offline"
 PREVIEW_TOKEN_TTL_S = 60
 FOCUS_TOKEN_TTL_S = 300
 DEFAULT_MIN_SESSION_KBPS = 200
+# 未认证连接只允许自举与会话保活, 其余消息必须先完成 register + auth
+UNAUTHENTICATED_TYPES: frozenset[str] = frozenset({"register", "auth", "heartbeat"})
+# 包络去重窗口与缓存上限: 窗口与 validate_envelope 的 5 分钟时间窗一致, 上限防止长跑进程内存膨胀
+REPLAY_WINDOW_S = 300.0
+REPLAY_CACHE_MAX = 4096
 
 
 @dataclass(frozen=True)
@@ -107,6 +119,8 @@ class SessionState:
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     ended: bool = False
+    # 被控端设备: answer 成功转发时记录, 屏幕墙归属登记据此校验发起方身份
+    host_device_id: str = ""
 
 
 @dataclass
@@ -128,7 +142,10 @@ class InMemorySignalingServer:
     :param overhead_ratio: 链路开销比
     :param max_sessions: 单中继并发会话数
     :param min_session_kbps: 单会话最低预算, 低于此值返回 RELAY_FULL
+    :param preview_max_kbps: 屏幕墙预览单路预算上限, 来自 [wall_preview] max_session_kbps
     :param deliver: 向对端连接投递包络的回调, 返回是否投递成功; 为空时保持旧行为
+    :param wall_owner_of: 墙到归属账号的解析, 由组装层注入墙服务; 未注入时只认 register_wall 登记
+    :param wall_binder: 墙归属登记落库回调, 由组装层注入账号库; 未注入时只写进程内登记
     """
 
     relay_endpoint: str = "relay://127.0.0.1:0"
@@ -136,7 +153,10 @@ class InMemorySignalingServer:
     overhead_ratio: float = 0.08
     max_sessions: int = 1
     challenge_ttl_s: int = 300
+    # control 授予有效期, 与挑战有效期解耦: 回收粒度决定客户端被杀后多久恢复可连
+    control_grant_ttl_s: int = DEFAULT_CONTROL_GRANT_TTL_S
     min_session_kbps: int = DEFAULT_MIN_SESSION_KBPS
+    preview_max_kbps: int = 300
     deliver: Callable[[str, dict[str, Any]], bool] | None = None
     identity: DeviceIdentity = field(default_factory=DeviceIdentity.generate)
     devices: dict[str, RegisteredDevice] = field(default_factory=dict)
@@ -156,10 +176,23 @@ class InMemorySignalingServer:
     presence_sink: Callable[[str, str], None] | None = None
     # 设备到账号的解析: 组装层注入账号服务后据此绑定预览/聚焦, 禁止 payload 自报账号
     account_of: Callable[[str], str] | None = None
+    # 墙到归属账号的解析: 组装层注入墙服务; 未注入时只认 wall_owners 显式登记
+    wall_owner_of: Callable[[str], str | None] | None = None
+    # 授予被回收时的外部通知: 中继服务据此立即断开数据面上使用该令牌的连接
+    grant_revoked: Callable[[str], None] | None = None
+    # 墙归属落库: 组装层注入账号库, 返回 (created/unchanged/conflict/unavailable, bound_at)
+    wall_binder: Callable[[str, str, str], tuple[str, str]] | None = None
+    # 墙到归属账号的本地登记, 供未接墙服务时显式建账
+    wall_owners: dict[str, str] = field(default_factory=dict)
+    # 已处理包络 id 的有界 LRU: id -> 首次处理时刻, 窗口内重复即丢弃
+    seen_messages: OrderedDict[str, float] = field(default_factory=OrderedDict)
     session_plane: SessionPlaneTracker = field(default_factory=SessionPlaneTracker)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _current_device: str = field(default="", repr=False)
     _presence_notified: dict[str, str] = field(default_factory=dict, repr=False)
+    # 定时清理线程: 由中继服务启停; 未启动时行为与旧版一致
+    _purge_stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    _purge_thread: threading.Thread | None = field(default=None, repr=False)
 
     # ---------------------------------------------------------------- 对外入口
     def handle(self, envelope: dict[str, Any], device_id: str | None = None) -> list[dict[str, Any]]:
@@ -188,6 +221,20 @@ class InMemorySignalingServer:
             msg_type = envelope["type"]
             if msg_type in SERVER_TYPES:
                 self.errors.append(f"UNEXPECTED_TYPE: 客户端不得发送 {msg_type}")
+                return []
+            if not self._current_device and msg_type not in UNAUTHENTICATED_TYPES:
+                # 未认证连接不得越过 register/auth 直接申请预算或路由消息
+                self.errors.append(f"UNAUTHENTICATED: 未认证连接不得发送 {msg_type}")
+                return [
+                    self._error(
+                        AUTH_FAILED,
+                        f"未认证连接不得发送 {msg_type}；请先完成 register 与 auth",
+                        envelope.get("session_id") if isinstance(envelope, dict) else None,
+                    )
+                ]
+            if msg_type in ROUTED_TYPES and self._remember_message(str(envelope["id"])):
+                # 同一包络 id 在 5 分钟窗口内重复到达: 直接丢弃, 不再转发也不再回包
+                self.errors.append(f"REPLAY_DROPPED: 重复消息 {msg_type} {envelope['id']}")
                 return []
 
             handler = getattr(self, f"_handle_{msg_type}", None)
@@ -307,7 +354,16 @@ class InMemorySignalingServer:
         return self._route(envelope, payload)
 
     def _handle_answer(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._route(envelope, payload)
+        responses = self._route(envelope, payload)
+        if not any(item.get("type") == "error" for item in responses):
+            # answer 的发送方即被控端; 成功转发后记入会话, 供墙归属登记校验 host 身份
+            session_id = str(payload.get("session_id") or envelope.get("session_id") or "")
+            if session_id and self._current_device:
+                self._touch_session(session_id, self._current_device)
+                state = self.sessions.get(session_id)
+                if state is not None and not state.ended:
+                    state.host_device_id = self._current_device
+        return responses
 
     def _handle_candidate(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
         return self._route(envelope, payload)
@@ -335,6 +391,9 @@ class InMemorySignalingServer:
         return self._session_plane(envelope, payload)
 
     def _handle_file_abort(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._session_plane(envelope, payload)
+
+    def _handle_file_result(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
         return self._session_plane(envelope, payload)
 
     def _handle_clipboard_update(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -377,6 +436,10 @@ class InMemorySignalingServer:
         if error:
             return [self._error("INVALID_MESSAGE", error, envelope.get("session_id"))]
         device_id, account_id = actor
+        denied = self._wall_access(wall_id, account_id)
+        if denied:
+            self.errors.append(f"SCOPE_INSUFFICIENT: {denied}")
+            return [self._error(SCOPE_INSUFFICIENT, denied, envelope.get("session_id"))]
         token, code = self.issue_focus_grant(wall_id, cell, account_id, device_id)
         if code:
             self.errors.append(f"{code}: 已有其它墙聚焦")
@@ -396,12 +459,19 @@ class InMemorySignalingServer:
         ]
 
     def _handle_wall_unfocus(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
-        if self._wall_actor(envelope) is None:
+        actor = self._wall_actor(envelope)
+        if actor is None:
             return [self._error(AUTH_FAILED, "屏幕墙操作必须来自已认证连接", envelope.get("session_id"))]
         wall_id = payload.get("wall_id")
         if not isinstance(wall_id, str) or not wall_id:
             return [self._error("INVALID_MESSAGE", "wall_id 必须是非空字符串", envelope.get("session_id"))]
-        released = self.stop_focus(wall_id)
+        device_id, account_id = actor
+        denied = self._wall_access(wall_id, account_id)
+        if denied:
+            self.errors.append(f"SCOPE_INSUFFICIENT: {denied}")
+            return [self._error(SCOPE_INSUFFICIENT, denied, envelope.get("session_id"))]
+        # 只释放本设备自己持有的聚焦令牌, 不得代他人释放
+        released = self.stop_focus(wall_id, device_id)
         return [
             build_envelope(
                 self.identity,
@@ -419,6 +489,10 @@ class InMemorySignalingServer:
         if error:
             return [self._error("INVALID_MESSAGE", error, envelope.get("session_id"))]
         device_id, account_id = actor
+        denied = self._wall_access(wall_id, account_id)
+        if denied:
+            self.errors.append(f"SCOPE_INSUFFICIENT: {denied}")
+            return [self._error(SCOPE_INSUFFICIENT, denied, envelope.get("session_id"))]
         revoked = [
             grant.device_id
             for grant in self.relay_grants.values()
@@ -444,6 +518,57 @@ class InMemorySignalingServer:
             )
         ]
 
+    def _handle_wall_bind(self, envelope: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """被控端登记墙归属: 必须验签、已绑定账号, 且是该会话确认过的 host 参与方."""
+        device_id = self._current_device
+        device = self.devices.get(device_id) if device_id else None
+        if device is None or not verify_envelope(envelope, device.public_key_b64):
+            self.errors.append("AUTH_FAILED: 墙归属登记必须来自已认证连接")
+            return [self._error(AUTH_FAILED, "屏幕墙登记必须来自已认证连接", envelope.get("session_id"))]
+        wall_id = payload.get("wall_id")
+        if not isinstance(wall_id, str) or not wall_id.strip():
+            return [self._error("INVALID_MESSAGE", "wall_id 必须是非空字符串", envelope.get("session_id"))]
+        # 账号只由服务端按已认证设备解析, 绝不采信 payload 自报
+        account_id = self.account_of(device_id) if self.account_of is not None else ""
+        if not account_id:
+            self.errors.append("AUTH_FAILED: 墙归属登记的设备未绑定账号")
+            return [self._error(AUTH_FAILED, "设备未绑定账号，不能登记屏幕墙归属", envelope.get("session_id"))]
+        session_id = str(payload.get("session_id") or "")
+        state = self.sessions.get(session_id)
+        if state is None or state.ended or device_id not in state.devices:
+            self.errors.append(f"AUTH_FAILED: 设备未加入会话 {session_id}")
+            return [self._error(AUTH_FAILED, "登记归属必须来自已建立的会话", envelope.get("session_id"))]
+        if state.host_device_id != device_id:
+            self.errors.append(f"AUTH_FAILED: 设备不是会话 {session_id} 的被控端")
+            return [
+                self._error(
+                    AUTH_FAILED,
+                    "只有该会话的被控端可以登记屏幕墙归属",
+                    envelope.get("session_id"),
+                )
+            ]
+        status, bound_at = self.bind_wall(wall_id, account_id, device_id)
+        if status == "conflict":
+            self.errors.append(f"{WALL_OWNERSHIP_CONFLICT}: 墙 {wall_id} 已归属其它账号")
+            return [
+                self._error(
+                    WALL_OWNERSHIP_CONFLICT,
+                    "该屏幕墙已归属其它账号，不能覆盖",
+                    envelope.get("session_id"),
+                )
+            ]
+        if status == "unavailable":
+            self.errors.append("INVALID_MESSAGE: 屏幕墙归属暂不可写")
+            return [self._error("INVALID_MESSAGE", "屏幕墙归属暂不可写，请稍后重试", envelope.get("session_id"))]
+        return [
+            build_envelope(
+                self.identity,
+                "wall_bound",
+                {"wall_id": wall_id, "account_id": account_id, "bound_at": bound_at},
+                session_id=envelope.get("session_id"),
+            )
+        ]
+
     def _wall_actor(self, envelope: dict[str, Any]) -> tuple[str, str] | None:
         """身份只取自已认证连接并校验签名; 账号由组装层解析, 绝不采信 payload 自报."""
         device_id = self._current_device
@@ -454,6 +579,44 @@ class InMemorySignalingServer:
             return None
         account_id = self.account_of(device_id) if self.account_of is not None else device_id
         return device_id, account_id or device_id
+
+    def register_wall(self, wall_id: str, account_id: str) -> None:
+        """登记屏幕墙的归属账号; 接墙服务后由组装层改走 wall_owner_of 注入."""
+        if not wall_id or not account_id:
+            raise ValueError("wall_id 与 account_id 不得为空")
+        with self._lock:
+            self.wall_owners[wall_id] = account_id
+
+    def bind_wall(self, wall_id: str, account_id: str, device_id: str) -> tuple[str, str]:
+        """登记屏幕墙归属, 返回 (状态, 绑定时间); 冲突不覆盖.
+
+        组装层注入账号库时以落库结果为准; 未注入时写进程内登记, 仅用于单测与本地联调.
+        """
+        if self.wall_binder is not None:
+            return self.wall_binder(wall_id, account_id, device_id)
+        owner = self.wall_owner(wall_id)
+        if owner is None:
+            self.register_wall(wall_id, account_id)
+            return "created", now_iso()
+        status = "unchanged" if owner == account_id else "conflict"
+        return status, now_iso()
+
+    def wall_owner(self, wall_id: str) -> str | None:
+        """取墙归属账号: 本地登记优先, 否则问注入的墙服务, 都没有视为未建账."""
+        with self._lock:
+            owner = self.wall_owners.get(wall_id)
+        if owner:
+            return owner
+        return self.wall_owner_of(wall_id) if self.wall_owner_of is not None else None
+
+    def _wall_access(self, wall_id: str, account_id: str) -> str:
+        """签发前校验墙归属, 返回错误文案; 空串表示通过."""
+        owner = self.wall_owner(wall_id)
+        if owner is None:
+            return "屏幕墙不存在或尚未建立归属，无法操作"
+        if owner != account_id:
+            return "无权访问该屏幕墙"
+        return ""
 
     def _push_preview_revoked(self, device_ids: list[str], wall_id: str, cell: int, reason: str) -> None:
         if not device_ids or self.deliver is None:
@@ -519,6 +682,10 @@ class InMemorySignalingServer:
         if not from_device_id or not to_device_id:
             self.errors.append("MISSING_ROUTE_FIELD: 缺少 from_device_id 或 to_device_id")
             return []
+        if str(from_device_id) != self._current_device:
+            # 发送方只能是当前连接已认证的设备, 不得借他人身份路由
+            self.errors.append("AUTH_FAILED: 转发消息发送方与已认证身份不一致")
+            return [self._error(AUTH_FAILED, "发送方与已认证身份不一致", envelope["session_id"])]
         device = self.devices.get(str(from_device_id))
         if device is None:
             self.errors.append("AUTH_FAILED: 发送方未注册")
@@ -549,21 +716,50 @@ class InMemorySignalingServer:
         session_id = str(payload["session_id"])
         requested = max(0, int(payload["requested_kbps"]))
         budget = self.session_budget_kbps()
-        granted = max(0, min(requested, budget))
+        granted = requested
 
-        # 会话数上限只统计正式会话; 屏幕墙预览与聚焦走独立令牌通道
+        # 只有该会话的参与设备可以申请中继预算: 会话必须存在、未结束且调用方在参与者内
+        state = self.sessions.get(session_id)
+        if state is None or state.ended or self._current_device not in state.devices:
+            self.errors.append(f"AUTH_FAILED: 设备未加入会话 {session_id}")
+            return [
+                self._error(
+                    AUTH_FAILED,
+                    "中继分配仅限该会话的参与设备，请先完成 offer 协商",
+                    envelope["session_id"],
+                )
+            ]
+
+        # 会话数上限只统计正式会话; 屏幕墙预览与聚焦走独立令牌通道.
+        # 名额按「活跃连接」而不是「授予条目」算: 控制端被强杀后它的传输连接消失,
+        # 即使授予还没到 TTL, 该会话也不再占名额, 新连接立即可用.
         now = time.time()
         active_sessions = {
             grant.session_id
             for grant in self.relay_grants.values()
-            if grant.expires_at > now and grant.scope == "control"
+            if grant.expires_at > now and grant.scope == "control" and self._session_is_alive(grant.session_id)
         }
         if session_id not in active_sessions and len(active_sessions) >= self.max_sessions:
-            self.errors.append("RELAY_FULL: 中继会话已满")
-            return [self._error(RELAY_FULL, "中继会话已满", envelope["session_id"])]
+            self.errors.append("RELAY_FULL: 中继通道已满")
+            return [self._error(RELAY_FULL, "中继通道已满，请等待或改用直连", envelope["session_id"])]
+        if requested > budget:
+            self.errors.append(f"RELAY_FULL: 请求 {requested} kbps 超过单路可用 {budget} kbps")
+            return [
+                self._error(
+                    RELAY_FULL,
+                    f"中继预算不足：请求 {requested} kbps，单路可用 {budget} kbps；请降低画质或改用直连",
+                    envelope["session_id"],
+                )
+            ]
         if granted < self.min_session_kbps:
-            self.errors.append("RELAY_FULL: 中继预算不足")
-            return [self._error(RELAY_FULL, "中继预算不足", envelope["session_id"])]
+            self.errors.append(f"RELAY_FULL: 预算 {granted} kbps 低于最低 {self.min_session_kbps} kbps")
+            return [
+                self._error(
+                    RELAY_FULL,
+                    f"中继预算不足：可用 {granted} kbps，低于最低 {self.min_session_kbps} kbps；请降低画质或改用直连",
+                    envelope["session_id"],
+                )
+            ]
 
         # 只吊销同设备同会话的旧令牌: 令牌绑定「设备 + 会话」, 同会话对端令牌必须继续有效
         self._revoke_device_session_grants(session_id, self._current_device)
@@ -573,7 +769,7 @@ class InMemorySignalingServer:
         self.relay_grants[relay_token] = RelayGrantRecord(
             session_id=session_id,
             budget_kbps=granted,
-            expires_at=now + self.challenge_ttl_s,
+            expires_at=now + self.control_grant_ttl_s,
             device_id=self._current_device,
             scope="control",
         )
@@ -608,6 +804,23 @@ class InMemorySignalingServer:
             {"code": code, "message": message},
             session_id=session_id,
         )
+
+    def _remember_message(self, message_id: str) -> bool:
+        """有界 LRU 去重: 返回 True 表示窗口内已见过, False 表示首次并已登记."""
+        now = time.time()
+        cache = self.seen_messages
+        # 只从队首淘汰过期项; 队首未过期时后面的只会更晚, 无需继续扫描
+        while cache:
+            _oldest_id, seen_at = next(iter(cache.items()))
+            if now - seen_at <= REPLAY_WINDOW_S:
+                break
+            cache.popitem(last=False)
+        if message_id in cache:
+            return True
+        cache[message_id] = now
+        while len(cache) > REPLAY_CACHE_MAX:
+            cache.popitem(last=False)
+        return False
 
     def _after_handle(self, msg_type: str, envelope: dict[str, Any], device_id: str | None) -> None:
         """处理会话生命周期: 记录参与者与活动时间, 收到 session_end 即回收授予."""
@@ -644,18 +857,70 @@ class InMemorySignalingServer:
             state.last_activity = time.time()
         self._revoke_session_grants(session_id)
 
+    def _drop_grant(self, token: str) -> None:
+        """回收一个授予并通知外部; 调用方必须已持有 self._lock."""
+        self.relay_grants.pop(token, None)
+        if token == self.focus_token:
+            self.focus_token = ""
+        if self.grant_revoked is not None:
+            # 通知方只做断开动作, 不会回调本对象, 因此在锁内调用不会形成环
+            self.grant_revoked(token)
+
     def _revoke_session_grants(self, session_id: str) -> None:
         for token, grant in list(self.relay_grants.items()):
             if grant.session_id == session_id:
-                self.relay_grants.pop(token, None)
+                self._drop_grant(token)
 
     def _revoke_device_session_grants(self, session_id: str, device_id: str) -> None:
         """只吊销同设备同会话的旧控制令牌; 令牌绑定设备与会话, 不能误伤同会话对端."""
         for token, grant in list(self.relay_grants.items()):
             if grant.session_id == session_id and grant.device_id == device_id:
-                self.relay_grants.pop(token, None)
-                if token == self.focus_token:
-                    self.focus_token = ""
+                self._drop_grant(token)
+
+    def _session_is_alive(self, session_id: str) -> bool:
+        """会话参与设备的传输连接都还在时才算占用名额.
+
+        被控端与控制端任一掉线(含被 force-stop 后的静默断开)即视为可回收:
+        授予还没过期也不应继续挡着新连接.
+        """
+        state = self.sessions.get(session_id)
+        if state is None or not state.devices:
+            return False
+        return state.devices.issubset(self.connected)
+
+    def start_maintenance(self, interval_s: float = PURGE_INTERVAL_S) -> None:
+        """启动定时清理线程; 重复调用无副作用."""
+        if self._purge_thread is not None:
+            return
+        self._purge_stop.clear()
+        thread = threading.Thread(
+            target=self._purge_loop,
+            args=(interval_s,),
+            name="signaling-purge",
+            daemon=True,
+        )
+        self._purge_thread = thread
+        thread.start()
+        log_event(
+            "relay",
+            "signaling_purge_started",
+            interval_s=interval_s,
+            control_grant_ttl_s=self.control_grant_ttl_s,
+        )
+
+    def stop_maintenance(self) -> None:
+        """停止定时清理线程, 供服务退出时等待收尾."""
+        self._purge_stop.set()
+        thread = self._purge_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            self._purge_thread = None
+
+    def _purge_loop(self, interval_s: float) -> None:
+        """按固定周期清理, 不依赖是否有入站消息."""
+        while not self._purge_stop.wait(interval_s):
+            with self._lock:
+                self._purge_expired()
 
     def _purge_expired(self) -> None:
         """清理过期挑战、令牌、授予与已结束会话, 防止长跑进程内存只增不减."""
@@ -670,9 +935,7 @@ class InMemorySignalingServer:
                 self.token_devices.pop(token, None)
         for token, grant in list(self.relay_grants.items()):
             if grant.expires_at <= now:
-                self.relay_grants.pop(token, None)
-                if token == self.focus_token:
-                    self.focus_token = ""
+                self._drop_grant(token)
         for session_id, state in list(self.sessions.items()):
             if state.ended and now - state.last_activity > SESSION_RETENTION_S:
                 self.sessions.pop(session_id, None)
@@ -786,9 +1049,7 @@ class InMemorySignalingServer:
                     revoked += 1
             for token, grant in list(self.relay_grants.items()):
                 if grant.device_id == device_id:
-                    self.relay_grants.pop(token, None)
-                    if token == self.focus_token:
-                        self.focus_token = ""
+                    self._drop_grant(token)
             return {"kicked_sessions": ended, "revoked_tokens": revoked}
 
     # ---------------------------------------------------------------- 屏幕墙令牌
@@ -814,11 +1075,11 @@ class InMemorySignalingServer:
                     and grant.cell == cell
                     and grant.account_id == account_id
                 ):
-                    self.relay_grants.pop(token, None)
+                    self._drop_grant(token)
             token = secrets.token_urlsafe(24)
             self.relay_grants[token] = RelayGrantRecord(
                 session_id=f"preview:{wall_id}:{cell}",
-                budget_kbps=min(300, self.session_budget_kbps()),
+                budget_kbps=min(self.preview_max_kbps, self.session_budget_kbps()),
                 expires_at=time.time() + ttl_s,
                 device_id=device_id,
                 scope="view",
@@ -834,7 +1095,7 @@ class InMemorySignalingServer:
             grant = self.relay_grants.get(relay_token)
             if grant is None or grant.scope != "view":
                 return False
-            self.relay_grants.pop(relay_token, None)
+            self._drop_grant(relay_token)
             return True
 
     def issue_focus_grant(
@@ -857,7 +1118,7 @@ class InMemorySignalingServer:
             if holder is not None and holder.wall_id != wall_id:
                 return "", "WALL_BUDGET_EXCEEDED"
             if self.focus_token:
-                self.relay_grants.pop(self.focus_token, None)
+                self._drop_grant(self.focus_token)
             token = secrets.token_urlsafe(24)
             self.relay_grants[token] = RelayGrantRecord(
                 session_id=f"focus:{wall_id}:{cell}",
@@ -872,8 +1133,8 @@ class InMemorySignalingServer:
             self.focus_token = token
             return token, ""
 
-    def stop_focus(self, wall_id: str = "") -> bool:
-        """退出聚焦并释放名额; 指定 wall_id 时只释放该墙的名额."""
+    def stop_focus(self, wall_id: str = "", device_id: str = "") -> bool:
+        """退出聚焦并释放名额; 指定 wall_id 时只释放该墙的名额, 指定 device_id 时只释放该设备持有的令牌."""
         with self._lock:
             holder = self.relay_grants.get(self.focus_token) if self.focus_token else None
             if holder is None:
@@ -881,8 +1142,9 @@ class InMemorySignalingServer:
                 return False
             if wall_id and holder.wall_id != wall_id:
                 return False
-            self.relay_grants.pop(self.focus_token, None)
-            self.focus_token = ""
+            if device_id and holder.device_id != device_id:
+                return False
+            self._drop_grant(self.focus_token)
             return True
 
     def revoke_wall_grants(self, wall_id: str) -> int:
@@ -891,7 +1153,7 @@ class InMemorySignalingServer:
             removed = 0
             for token, grant in list(self.relay_grants.items()):
                 if grant.wall_id == wall_id:
-                    self.relay_grants.pop(token, None)
+                    self._drop_grant(token)
                     removed += 1
             if self.focus_token and self.focus_token not in self.relay_grants:
                 self.focus_token = ""

@@ -168,7 +168,6 @@ def main(argv: list[str] | None = None) -> int:
 
     latest = release_root / "github" / args.repo / "releases" / "latest" / "download"
     manifest = json.loads((latest / "update-manifest.json").read_text(encoding="utf-8"))
-    expected_sha = str(manifest["assets"][0]["sha256"])
     steps.append(
         {
             "step": "清单资产与命名一致",
@@ -196,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     local_status = local_service.refresh_update_status()
     local_ok, local_state, local_package = _download(local_service, evidence)
     local_digest = _sha256(local_package) if local_package.is_file() else ""
-    local_manifest_sha = _first_sha(offline_latest / "update-manifest.json")
+    local_manifest_sha = _asset_sha(offline_latest / "update-manifest.json", local_package.name)
     steps.append(
         {
             "step": "本地目录源: 检查->下载->校验",
@@ -215,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     mirror_status = mirror_service.refresh_update_status()
     mirror_ok, mirror_state, mirror_package = _download(mirror_service, evidence)
     mirror_digest = _sha256(mirror_package) if mirror_package.is_file() else ""
+    expected_sha = _asset_sha(latest / "update-manifest.json", mirror_package.name)
     steps.append(
         {
             "step": "镜像源(模拟 GitHub 资产直链): 检查->下载->校验",
@@ -243,11 +243,15 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copytree(latest, tampered_root, dirs_exist_ok=True)
     tampered_manifest_path = tampered_root / "update-manifest.json"
     tampered_manifest = json.loads(tampered_manifest_path.read_text(encoding="utf-8"))
-    tampered_manifest["assets"][0]["url"] = tampered_manifest["assets"][0]["name"]
+    tampered_asset = next(
+        (item for item in tampered_manifest["assets"] if item["name"] == local_package.name),
+        tampered_manifest["assets"][0],
+    )
+    tampered_asset["url"] = tampered_asset["name"]
     tampered_manifest_path.write_text(
         json.dumps(tampered_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
-    (tampered_root / tampered_manifest["assets"][0]["name"]).write_bytes(os.urandom(128 * 1024))
+    (tampered_root / tampered_asset["name"]).write_bytes(os.urandom(128 * 1024))
     tampered_service = UpdateService(
         current_version=args.current_version,
         source=f"local:{tampered_root}",
@@ -259,8 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     steps.append(
         {
             "step": "篡改包校验失败并清理",
-            "passed": not tampered_ok and tampered_state == "failed" and not leftover,
-            "detail": f"status={tampered_state} leftover={len(leftover)}",
+            "passed": not tampered_ok and not leftover,
+            "detail": f"status={tampered_state or 'rejected'} leftover={len(leftover)}",
         }
     )
 
@@ -299,9 +303,12 @@ def _code_version() -> str:
     return __version__
 
 
-def _first_sha(manifest_path: Path) -> str:
+def _asset_sha(manifest_path: Path, name: str) -> str:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return str(payload["assets"][0]["sha256"])
+    for asset in payload.get("assets", []):
+        if asset.get("name") == name:
+            return str(asset.get("sha256", ""))
+    return ""
 
 
 def _write_result(

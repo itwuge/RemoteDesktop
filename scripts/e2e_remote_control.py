@@ -304,7 +304,7 @@ def _run(arguments: argparse.Namespace) -> int:
         wait_json_file(host_dir / "dataplane_ready.json", lambda value: value.get("ready") is True, 20.0)
         add("数据面双端配对", True, "publisher 与 subscriber 均已挂到同一会话")
 
-        session = controller_handshake(relay_socket, identity)
+        session = controller_handshake(relay_socket, identity, session_id, str(ready["device_id"]))
         channel = AeadChannel(relay_socket, session)
         add("AEAD 握手与身份验签", True, "X25519 + ChaCha20-Poly1305, 被控端 Ed25519 签名已校验")
 

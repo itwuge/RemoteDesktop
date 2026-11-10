@@ -38,12 +38,13 @@ from rdc.wall.preview import PREVIEW_SCOPE, PreviewTokenStore
 
 @dataclass
 class WallRecord:
-    """一块屏幕墙的内存状态."""
+    """一块屏幕墙的内存状态; account_id 是墙的归属账号, 预览与聚焦据此鉴权."""
 
     wall_id: str
     plan: dict[str, Any]
     budget_units: int = DEFAULT_DECODE_BUDGET_UNITS
     focused_cell: int | None = None
+    account_id: str = ""
 
 
 @dataclass
@@ -68,7 +69,12 @@ class WallService:
             plan = plan_wall(layout, self.budget_units)
         except ValueError as error:
             return CommandResult(ok=False, message=str(error), error_code=WALL_BUDGET_EXCEEDED)
-        record = WallRecord(wall_id=f"wall-{uuid.uuid4()}", plan=plan, budget_units=self.budget_units)
+        record = WallRecord(
+            wall_id=f"wall-{uuid.uuid4()}",
+            plan=plan,
+            budget_units=self.budget_units,
+            account_id=self.account_id or "",
+        )
         self.walls[record.wall_id] = record
         self._audit(record.wall_id, "wall.start", layout=layout, cells=len(plan["cells"]))
         self._emit_degrade(record, "start_wall")
@@ -162,6 +168,13 @@ class WallService:
         if record is None:
             return list(self.archived_devices.get(wall_id, ()))
         return [str(cell["device_id"]) for cell in record.plan["cells"] if cell.get("device_id")]
+
+    def wall_owner(self, wall_id: str) -> str | None:
+        """返回墙的归属账号; 墙不存在或创建时未登录返回 None, 由信令侧按无权处理."""
+        record = self.walls.get(wall_id)
+        if record is None or not record.account_id:
+            return None
+        return record.account_id
 
     def get_wall_audit_log(self, wall_id: str, since: str = "") -> CommandResult:
         """读取屏幕墙审计; 已关闭但保留期内的墙仍可读 (契约第 46 条)."""
