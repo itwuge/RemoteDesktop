@@ -1,0 +1,8 @@
+# 文件: .gitignore | 用途: 排除构建产物与签名材料 | 边界: 只作用于 android/
+.gradle/
+build/
+local.properties
+keystore.properties
+*.jks
+*.p12
+*.keystore

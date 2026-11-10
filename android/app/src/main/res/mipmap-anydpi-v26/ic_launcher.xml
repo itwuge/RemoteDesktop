@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  文件        : ic_launcher.xml
+  所属目录    : android/app/src/main/res/mipmap-anydpi-v26/
+  文件用途    : 自适应应用图标
+  架构定位    : 资源层
+  职责边界    : 只组合背景色与前景矢量
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

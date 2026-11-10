@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  文件        : strings.xml
+  所属目录    : android/app/src/main/res/values/
+  文件用途    : 控制端全部用户可见文案
+  架构定位    : 资源层, 只放文案, 不放逻辑
+  职责边界    : 不含业务判断; 命令层返回文案不在本文件内改写
+-->
+<resources>
+    <string name="app_name">RDC 远程桌面</string>
+
+    <!-- 连接页 -->
+    <string name="brand_sub">控制端 · 本机仅控制</string>
+    <string name="role_badge">仅控制端</string>
+    <string name="home_title">连接到电脑</string>
+    <string name="home_sub">输入电脑端显示的本机设备码与临时连接码。</string>
+    <string name="home_local_id_label">本机设备 ID</string>
+    <string name="home_local_id_note">仅本机可见 · 设备身份未接入</string>
+    <string name="home_peer_label">电脑设备码</string>
+    <string name="home_peer_hint">输入对方设备码</string>
+    <string name="home_code_label">临时连接码</string>
+    <string name="home_code_hint">6 位数字</string>
+    <string name="home_connect">连接</string>
+    <string name="home_perm_entry">首次使用？查看权限引导</string>
+    <string name="home_account_entry">账号与设备 · 登录后免确认</string>
+    <string name="home_recent">最近连接</string>
+    <string name="home_recent_contract">list_sessions()</string>
+    <string name="home_recent_empty">暂无最近连接</string>
+    <string name="home_recent_empty_note">命令层未接入, 无会话记录</string>
+    <string name="home_recent_ready">最近连接已返回</string>
+    <string name="home_preview_entry">打开本机会话窗口（界面验证）</string>
+    <string name="home_preview_note">已进入离线预览: 画面与命令层未接入</string>
+    <string name="home_status_idle">未连接</string>
+    <string name="home_connecting">连接中…</string>
+    <string name="home_footnote">仅控制端 · 不采集屏幕 · Android 10 及以上</string>
+    <string name="home_debug_on">调试日志已开启</string>
+    <string name="home_debug_off">调试日志已关闭</string>
+
+    <!-- 权限引导页 -->
+    <string name="permission_back">‹ 返回连接页</string>
+    <string name="permission_title">首次使用</string>
+    <string name="permission_sub">安卓控制端只需要以下系统授权, 不接受远控请求。</string>
+    <string name="permission_step_index">%1$d</string>
+    <string name="permission_step_install">允许安装未知来源应用</string>
+    <string name="permission_step_install_note">仅侧载 APK 时需要; 装好后可关闭该授权</string>
+    <string name="permission_step_notify">允许通知</string>
+    <string name="permission_step_notify_note">用于显示会话进行中的常驻提示</string>
+    <string name="permission_step_network">允许网络访问</string>
+    <string name="permission_step_network_note">局域网直连与中继降级都需要</string>
+    <string name="permission_control_only">本机仅作控制端: 不申请屏幕采集, 不启动 MediaProjection, 不接受被控。</string>
+    <string name="permission_done">我知道了</string>
+    <string name="permission_footnote">授权只用于控制他人设备, 不会把本机画面外发</string>
+
+    <!-- 账号与设备占位页 -->
+    <string name="account_back">‹ 返回连接页</string>
+    <string name="account_placeholder">账号与设备功能占位 · 命令层未接入</string>
+    <string name="account_scope">占位页不发起登录请求, 不保存凭据, 不展示虚构设备。账号体系与设备列表随命令层接入。</string>
+    <string name="account_back_to_connect">返回连接页</string>
+    <string name="account_footnote">离线占位 · 无网络请求</string>
+
+    <!-- 会话窗 -->
+    <string name="session_placeholder">等待远端画面（码流未接入）</string>
+    <string name="session_remote_label">画面占位 · 未接真实解码</string>
+    <string name="session_peer_format">对端 %1$s</string>
+    <string name="session_peer_unknown">未接入</string>
+    <string name="session_metrics_value">%1$s ms · %2$s fps · %3$s</string>
+    <string name="session_metrics_placeholder">— ms · — fps · %1$s</string>
+    <string name="session_title">桌面会话</string>
+    <string name="session_state_offline">离线预览 · 命令层未接入 · 不做真实解码</string>
+    <string name="session_state_online">已连接 · 通路 %1$s</string>
+    <string name="session_badge_offline">未接入</string>
+    <string name="session_badge_online">已连接</string>
+    <string name="session_stat_fps">帧率</string>
+    <string name="session_stat_latency">延迟 p50 / p95 (ms)</string>
+    <string name="session_stat_bitrate">码率</string>
+    <string name="session_stat_profile">画质档位</string>
+    <string name="session_landscape_fullscreen">横屏全屏</string>
+    <string name="session_back">返回</string>
+    <string name="session_fullscreen">全屏</string>
+    <string name="session_keyboard">键盘</string>
+    <string name="session_quality">画质</string>
+    <string name="session_disconnect">断开</string>
+    <string name="session_transfer">传输</string>
+    <string name="session_sheet_close">收起</string>
+    <string name="session_quality_title">选择画质档</string>
+    <string name="session_quality_option">%1$s\n%2$s</string>
+    <string name="session_quality_auto_note">按带宽与对端能力自动选择</string>
+    <string name="session_quality_4k_note">仅 P2P 直连保证, 中继不可用</string>
+    <string name="session_quality_1440_note">直连默认档位</string>
+    <string name="session_quality_1080p60_note">弱网直连回落</string>
+    <string name="session_quality_1080p30_note">最低档, 优先保连接</string>
+
+    <!-- 会话窗 · 文件传输 -->
+    <string name="session_transfer_title">文件传输</string>
+    <string name="session_transfer_sheet_title">传输 · 剪贴板</string>
+    <string name="session_transfer_state_waiting">未开始</string>
+    <string name="session_transfer_state_running">传输中</string>
+    <string name="session_transfer_state_paused">已暂停</string>
+    <string name="session_transfer_state_cancelled">已取消</string>
+    <string name="session_transfer_state_done">已完成</string>
+    <string name="session_transfer_rate">速率 %1$s</string>
+    <string name="session_transfer_percent">%1$d%%</string>
+    <string name="session_transfer_eta">剩余 %1$s</string>
+    <string name="session_transfer_eta_seconds">约 %1$d 秒</string>
+    <string name="session_transfer_file">文件 %1$s</string>
+    <string name="session_transfer_pick">选择文件</string>
+    <string name="session_transfer_pick_note">文件选择与上传由命令层接入后开放</string>
+    <string name="session_transfer_pause">暂停</string>
+    <string name="session_transfer_resume">继续</string>
+    <string name="session_transfer_cancel">取消</string>
+    <string name="session_transfer_retry">重试</string>
+    <string name="session_transfer_note">未建立会话时置灰; 当前命令层未接入, 不产生真实读写。</string>
+
+    <!-- 会话窗 · 剪贴板 -->
+    <string name="session_clipboard_title">剪贴板同步</string>
+    <string name="session_clipboard_idle">最近同步: 无</string>
+    <string name="session_clipboard_off">最近同步: 已关闭</string>
+    <string name="session_clipboard_send">同步本端文本</string>
+    <string name="session_clipboard_pull">从远端拉取</string>
+    <string name="session_clipboard_status_local">最近同步: 本端文本 %1$d B</string>
+    <string name="session_clipboard_status_remote">最近同步: 远端文本 %1$d B</string>
+    <string name="session_clipboard_demo_text">RDC 剪贴板同步示意文本</string>
+    <string name="session_clipboard_sent_toast">已提交本端示意文本</string>
+    <string name="session_clipboard_pulled_toast">已拉取远端示意文本</string>
+    <string name="session_clipboard_enabled_toast">剪贴板同步已开启</string>
+    <string name="session_clipboard_disabled_toast">剪贴板同步已关闭</string>
+    <string name="session_clipboard_note">仅示意: 不读写系统剪贴板, 不落地明文。</string>
+
+    <!-- 底部导航 -->
+    <string name="tab_connect">连接</string>
+    <string name="tab_devices">设备</string>
+    <string name="tab_messages">消息</string>
+    <string name="tab_profile">我的</string>
+
+    <!-- 设备页 -->
+    <string name="devices_sub">同账号设备 · 免确认开关</string>
+    <string name="devices_no_account">未连接账号</string>
+    <string name="devices_no_account_note">设备列表与免确认设置需登录后从账号同步; 当前命令层未接入。</string>
+    <string name="devices_go_profile">前往「我的」</string>
+    <string name="devices_list_title">同账号设备</string>
+    <string name="devices_list_contract">list_devices()</string>
+    <string name="devices_empty">暂无设备</string>
+    <string name="devices_empty_note">登录后同步同账号设备; 未接入时不展示示例设备。</string>
+    <string name="devices_legend_title">设备状态</string>
+    <string name="devices_state_online">在线</string>
+    <string name="devices_state_offline">离线</string>
+    <string name="devices_state_unknown">未知</string>
+    <string name="devices_auto_confirm">新设备连接免确认</string>
+    <string name="devices_auto_confirm_note">关闭时每次连接需在本机确认</string>
+    <string name="devices_auto_confirm_locked">未登录账号时不可修改</string>
+
+    <!-- 消息页 -->
+    <string name="messages_sub">申请与审批 · 授权变更 · 系统通知</string>
+    <string name="messages_mark_all">全部已读</string>
+    <string name="messages_filter_all">全部</string>
+    <string name="messages_filter_request">申请与审批</string>
+    <string name="messages_filter_auth">授权变更</string>
+    <string name="messages_filter_system">系统通知</string>
+    <string name="messages_empty_all">暂无消息 · 未连接账号</string>
+    <string name="messages_empty_request">未连接账号, 暂无申请与审批记录</string>
+    <string name="messages_empty_auth">未连接账号, 暂无授权变更记录</string>
+    <string name="messages_notice_title">预览版说明</string>
+    <string name="messages_notice_body">命令层未接入: 画面、文件传输与剪贴板均为占位。本机只作控制端, 不采集屏幕, 不接受被控。</string>
+    <string name="messages_unread">未读</string>
+
+    <!-- 我的页 -->
+    <string name="profile_sub">账号 · 画质与降级 · 诊断 · 关于</string>
+    <string name="profile_account_state">未登录</string>
+    <string name="profile_account_note">登录后同步设备、免确认与消息; 当前账号体系随命令层接入。</string>
+    <string name="profile_account_entry">账号与设备</string>
+    <string name="profile_section_quality">画质与降级</string>
+    <string name="profile_quality_default">默认画质档</string>
+    <string name="profile_quality_note">新建会话时使用的档位; 会话内可临时切换</string>
+    <string name="profile_downgrade">中继降级时自动降档</string>
+    <string name="profile_downgrade_note">中继出口不足时自动降低分辨率与码率</string>
+    <string name="profile_clipboard">会话内剪贴板同步</string>
+    <string name="profile_clipboard_note">仅示意开关, 不读写系统剪贴板</string>
+    <string name="profile_section_diagnostics">诊断</string>
+    <string name="profile_diagnostics_export">诊断导出（脱敏）</string>
+    <string name="profile_diagnostics_note">只导出运行环境与开关状态, 不含设备 ID、连接码与令牌</string>
+    <string name="profile_diagnostics_action">导出诊断文件</string>
+    <string name="profile_diagnostics_done">诊断文件已导出</string>
+    <string name="profile_diagnostics_failed">诊断导出失败</string>
+    <string name="profile_section_about">关于</string>
+    <string name="profile_version">版本 %1$s · 仅控制端</string>
+    <string name="profile_role_note">本机不申请屏幕采集, 不启动 MediaProjection, 不接受被控。</string>
+    <string name="profile_debug_log">调试日志</string>
+    <string name="profile_debug_log_note">默认关闭; 开启后仅影响 adb 日志详细度</string>
+    <string name="profile_permission_entry">查看权限引导</string>
+    <string name="profile_footnote">RDC 控制端 · 界面骨架 · 数据未接真实解码</string>
+
+    <!-- 无障碍描述 -->
+    <string name="a11y_selected">已选中</string>
+    <string name="a11y_unread">有未读消息</string>
+    <string name="a11y_remote_surface">远端画面区域, 可触摸操作</string>
+</resources>

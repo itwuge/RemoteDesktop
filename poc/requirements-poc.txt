@@ -1,0 +1,10 @@
+# PoC 依赖锁文件（2026-11-10 实测版本）
+# 只用于第 0 批 PoC，不进入发布依赖；libx264 仅用于 PoC 软件编码兜底，发布禁用 GPL 组件。
+av==19.0.2
+websockets==17.4
+dxcam==0.3.0
+numpy==2.5.4
+psutil==7.2.2
+cryptography==50.0.1
+PySide6==6.11.2
+pytest==9.1.1

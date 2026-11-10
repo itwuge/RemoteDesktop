@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  文件        : AndroidManifest.xml
+  所属目录    : android/app/src/main/
+  文件用途    : 声明权限、控制端首页、会话窗与账号占位页
+  架构定位    : Android 薄壳清单, 不含业务逻辑
+  职责边界    : 只声明组件与权限; 不声明采集与前台服务 (控制端不做被控)
+  运行环境    : minSdk 29 / targetSdk 34
+  依赖关系    : MainActivity、SessionActivity、AccountActivity
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+
+        <!-- 连接页: 横竖屏不重建, 输入态保留 -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 会话窗: 旋转时由 Surface 回调迁移输出面, 界面不重建, 解码与状态保留 -->
+        <activity
+            android:name=".SessionActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="false" />
+
+        <!-- 账号/设备占位页: 只展示占位文案, 不对外暴露 -->
+        <activity
+            android:name=".AccountActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="false" />
+
+        <!-- 权限引导页: 只做说明, 不申请敏感权限 -->
+        <activity
+            android:name=".PermissionActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+            android:exported="false" />
+
+    </application>
+
+</manifest>

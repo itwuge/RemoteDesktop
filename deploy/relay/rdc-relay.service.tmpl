@@ -1,0 +1,59 @@
+# 文件: rdc-relay.service.tmpl | 用途: systemd 单元模板 | 边界: 由 deploy.py 替换占位符后安装
+[Unit]
+Description=RDC signaling and relay service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@PREFIX@/app
+Environment=PYTHONPATH=@PREFIX@/app
+Environment=PYTHONUNBUFFERED=1
+# 日志固定落盘到可写目录, 并默认对来源 IP 脱敏
+Environment=RDC_LOG_DIR=@LOGDIR@
+Environment=RDC_LOG_REDACT_IP=1
+ExecStart=@PYTHON@ -m rdc.relay --config @CONFIG@
+# 证书轮换: SIGHUP 触发 TLS 上下文热加载, 不重启进程、不中断监听
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+
+# 资源保护: 3 Mbps 档的 Python 中继常驻内存约 60-80 MiB, 384 MiB 留足余量
+LimitNOFILE=4096
+TasksMax=256
+MemoryMax=384M
+CPUQuota=150%
+
+# 最小权限: 不获取新权限, 只写日志目录, 只允许网络与本地套接字
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@LOGDIR@
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rdc-relay
+
+[Install]
+WantedBy=multi-user.target

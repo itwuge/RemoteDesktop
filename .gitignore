@@ -1,0 +1,44 @@
+# 文件: .gitignore | 用途: 阻断凭据、日志、构建产物与大体积证据进入版本库
+# 边界: 只影响版本控制; 本地文件与 D:\RDC-Build 产物不受影响
+
+# 虚拟环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.trae-html-share-packages/
+
+# 日志、运行数据与本地截图
+logs/
+*.log
+diagnostics/
+.screenshots/
+
+# 构建产物
+build/
+dist/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/evidence/
+
+# 签名与凭据：任何情况下都不入库
+android/keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+host.txt
+*.pem
+*.key
+
+# 生成证据（含本机路径与二进制产物，保留在 D:\RDC-Build 与本地 evidence/）
+evidence/
+
+# 第三方登录窗口截图，可能包含账号或连接码
+todesk-login-*.png

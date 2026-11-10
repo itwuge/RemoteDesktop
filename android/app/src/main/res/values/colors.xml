@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  文件        : colors.xml
+  所属目录    : android/app/src/main/res/values/
+  文件用途    : 应用图标背景色
+  架构定位    : 资源层
+  职责边界    : 只放颜色常量
+-->
+<resources>
+    <color name="ic_launcher_background">#2F63D8</color>
+</resources>

@@ -1,0 +1,25 @@
+# 提交前钩子: 与 scripts/gate.ps1 使用同一套规则, 不另立标准。
+# 依赖: 已安装 ruff 与 mypy（本项目装到 D:\RDC-Build\tools\pylibs）。
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: python -m ruff check src tests scripts poc/tools
+        language: system
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format --check
+        entry: python -m ruff format --check src tests scripts poc/tools
+        language: system
+        pass_filenames: false
+      - id: banned-patterns
+        name: 禁止 print / 裸 except
+        entry: python scripts/check_banned_patterns.py
+        language: system
+        pass_filenames: false
+      - id: mypy
+        name: mypy
+        entry: python -m mypy
+        language: system
+        pass_filenames: false

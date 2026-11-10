@@ -1,0 +1,4 @@
+# 桌面端运行依赖锁定（Windows / macOS / Linux 通用）
+# 版本与本机实测环境一致: 2026-11-10
+PySide6==6.11.2
+cryptography==50.0.1
