@@ -27,8 +27,21 @@ from rdc.version import __version__
 __all__ = ["MainWindow", "main"]
 
 
+def _claim_taskbar_identity() -> None:
+    """声明进程身份, 让 Windows 任务栏使用窗口图标而不是 pythonw 的默认图标."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("RDC.RemoteDesktop")
+    except (AttributeError, OSError):
+        return
+
+
 def main(argv: list[str] | None = None) -> int:
     """启动桌面界面."""
+    _claim_taskbar_identity()
     arguments = sys.argv if argv is None else argv
     runtime.bootstrap_runtime()
     configure_logging()

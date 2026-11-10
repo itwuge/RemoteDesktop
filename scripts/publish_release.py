@@ -130,6 +130,7 @@ def build_manifest(
     notes: list[str],
     mandatory: bool,
     min_version: str,
+    platforms: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """构造 v2 清单; asset_url_base 为空时使用资产相对名, 便于本地目录源."""
     assets = []
@@ -145,7 +146,7 @@ def build_manifest(
                 "size": path.stat().st_size,
             }
         )
-    return {
+    manifest: dict[str, object] = {
         "schema": 2,
         "version": version,
         "release_date": release_date,
@@ -155,6 +156,9 @@ def build_manifest(
         "tag": tag,
         "assets": assets,
     }
+    if platforms:
+        manifest["platforms"] = platforms
+    return manifest
 
 
 def materialize(source: Path, target: Path) -> None:
@@ -217,6 +221,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-version", default="0.1.0")
     parser.add_argument("--notes-file", default="", help="更新说明文件, 每行一条")
     parser.add_argument("--mandatory", action="store_true")
+    parser.add_argument(
+        "--platform-unavailable",
+        action="append",
+        default=[],
+        help="平台=原因, 在清单中标注该平台未提供产物, 可重复",
+    )
     args = parser.parse_args(argv)
 
     if args.version != version:
@@ -243,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     default_asset_base = f"https://github.com/{repo}/releases/download/{tag}"
     asset_url_base = "" if args.relative_asset_urls else (args.asset_url_base or default_asset_base)
     notes = _read_notes(args.notes_file) or list(DEFAULT_NOTES.splitlines())
+    platforms = _platform_entries(artifacts, args.platform_unavailable)
     manifest = build_manifest(
         version=args.version,
         tag=tag,
@@ -252,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         notes=notes,
         mandatory=bool(args.mandatory),
         min_version=args.min_version,
+        platforms=platforms,
     )
 
     staging = out_root / tag
@@ -307,6 +319,23 @@ def _read_notes(path: str) -> list[str]:
         return []
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     return [line.strip() for line in lines if line.strip()]
+
+
+def _platform_entries(artifacts: list[tuple[Path, str, str]], unavailable: list[str]) -> dict[str, dict[str, object]]:
+    """汇总清单的 platforms 字段: 有产物的平台标 available, 其余按 平台=原因 标注."""
+    entries: dict[str, dict[str, object]] = {}
+    for _, platform, kind in artifacts:
+        entry = entries.setdefault(platform, {"status": "available", "kinds": []})
+        kinds = entry["kinds"]
+        if isinstance(kinds, list) and kind not in kinds:
+            kinds.append(kind)
+    for item in unavailable:
+        name, _, reason = item.partition("=")
+        label = name.strip()
+        if not label:
+            continue
+        entries[label] = {"status": "unavailable", "reason": reason.strip() or "未提供该平台产物"}
+    return entries
 
 
 if __name__ == "__main__":
