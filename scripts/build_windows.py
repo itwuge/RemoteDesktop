@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUILD_ROOT = Path(r"D:\RDC-Build")
 APP_DIR_NAME = "rdc-desktop"
 APP_ICON = ROOT / "assets" / "app-icon" / "rdc.ico"
+PORTABLE_FOLDER_NAME = "RDC 远程桌面"
 PORTABLE_CONFIG = '{\n  "update_source": ""\n}\n'
 
 
@@ -131,6 +132,8 @@ def _portable_readme() -> str:
     return (
         "RDC 远程桌面 便携版\n"
         "==================\n\n"
+        "解压后得到「RDC 远程桌面」文件夹, 安装版默认也装到同名目录\n"
+        "(%LOCALAPPDATA%\\Programs\\RDC 远程桌面). 两者同名, 请解压到与安装版不同的父目录再并列使用.\n"
         "启动: 双击 rdc-desktop.exe, 不会出现黑色控制台窗口.\n"
         "配置: data\\config.json; update_source 可填本地 manifest.json 路径或本地 HTTP 地址.\n"
         "日志: data\\logs\\rdc.log.\n"
@@ -140,7 +143,7 @@ def _portable_readme() -> str:
 
 
 def _zip_portable(source_dir: Path, zip_path: Path, top_name: str) -> int:
-    """把便携目录压成 zip, 顶层目录使用带版本与平台的产物名."""
+    """把便携目录压成 zip, 顶层目录统一为 PORTABLE_FOLDER_NAME, 与安装目录同名."""
     files = 0
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(source_dir.rglob("*")):
@@ -201,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     _write_portable_assets(portable_dir)
 
     zip_path = artifacts / f"{basename}-portable.zip"
-    files = _zip_portable(portable_dir, zip_path, basename)
+    files = _zip_portable(portable_dir, zip_path, PORTABLE_FOLDER_NAME)
     digest = _sha256(zip_path)
     checksum_path = zip_path.with_suffix(".zip.sha256")
     checksum_path.write_text(f"{digest}  {zip_path.name}\n", encoding="ascii", newline="\n")

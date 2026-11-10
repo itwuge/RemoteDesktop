@@ -121,7 +121,7 @@ jobs:
   publish:
     name: publish-macos-assets
     needs: build
-    runs-on: macos-14
+    runs-on: macos-15
     if: ${{ github.event_name == 'push' || inputs.publish == true }}
     steps:
       - name: 检出代码

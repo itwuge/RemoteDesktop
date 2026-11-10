@@ -1,7 +1,7 @@
 ﻿; ==========================================================================================
 ; 文件        : rdc-installer.nsi
 ; 所属目录    : packaging/windows/
-; 文件用途    : Windows 安装包脚本; 安装到 Program Files 或用户选择目录, 建快捷方式, 可卸载
+; 文件用途    : Windows 安装包脚本; 安装到当前用户目录或用户选择目录, 建快捷方式, 可卸载
 ; 架构定位    : 发布配置; 由 scripts/build_installer.py 参数化调用
 ; 核心功能    : 复制无控制台产物; 开始菜单与桌面快捷方式; 卸载注册项; 静默安装支持
 ; 职责边界    : 不修改系统服务; 不写开机启动; 不删除用户配置与日志
@@ -34,9 +34,9 @@ Unicode true
 
 Name "${APP_NAME} ${VERSION}"
 OutFile "${OUT_FILE}"
-InstallDir "$PROGRAMFILES64\${APP_NAME}"
-InstallDirRegKey HKLM "${APP_REG_KEY}" "InstallLocation"
-RequestExecutionLevel admin
+InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
+InstallDirRegKey HKCU "${APP_REG_KEY}" "InstallLocation"
+RequestExecutionLevel user
 SetCompressor /SOLID lzma
 BrandingText "${APP_NAME} ${VERSION}"
 ShowInstDetails show
@@ -63,6 +63,15 @@ VIAddVersionKey /LANG=2052 "ProductVersion" "${VERSION}"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
+; 0.2.0 及更早版本装在 Program Files 并写 HKLM; 本版改为当前用户目录, 不自动迁移旧文件
+Function .onInit
+  ReadRegStr $0 HKLM "${APP_REG_KEY}" "InstallLocation"
+  StrCmp $0 "" done
+  IfSilent done
+  MessageBox MB_OK|MB_ICONINFORMATION "检测到旧版本安装目录:$\r$\n$0$\r$\n$\r$\n本版默认安装到当前用户目录, 不会自动迁移旧文件; 如不再需要旧版本, 请先在「应用和功能」中卸载."
+  done:
+FunctionEnd
+
 Section "主程序" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
@@ -74,20 +83,20 @@ Section "主程序" SecMain
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   SetRegView 64
-  WriteRegStr HKLM "${APP_REG_KEY}" "DisplayName" "${APP_NAME}"
-  WriteRegStr HKLM "${APP_REG_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "${APP_REG_KEY}" "Publisher" "${APP_PUBLISHER}"
-  WriteRegStr HKLM "${APP_REG_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${APP_REG_KEY}" "DisplayName" "${APP_NAME}"
+  WriteRegStr HKCU "${APP_REG_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${APP_REG_KEY}" "Publisher" "${APP_PUBLISHER}"
+  WriteRegStr HKCU "${APP_REG_KEY}" "InstallLocation" "$INSTDIR"
   !ifdef ICON_FILE
-    WriteRegStr HKLM "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\rdc-desktop.ico"
+    WriteRegStr HKCU "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\rdc-desktop.ico"
   !else
-    WriteRegStr HKLM "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
+    WriteRegStr HKCU "${APP_REG_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
   !endif
-  WriteRegStr HKLM "${APP_REG_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegDWORD HKLM "${APP_REG_KEY}" "NoModify" 1
-  WriteRegDWORD HKLM "${APP_REG_KEY}" "NoRepair" 1
+  WriteRegStr HKCU "${APP_REG_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
+  WriteRegDWORD HKCU "${APP_REG_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${APP_REG_KEY}" "NoRepair" 1
 
-  SetShellVarContext all
+  SetShellVarContext current
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\Uninstall.exe"
@@ -95,13 +104,13 @@ Section "主程序" SecMain
 SectionEnd
 
 Section "Uninstall"
-  SetShellVarContext all
+  SetShellVarContext current
   Delete "$DESKTOP\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk"
   RMDir "$SMPROGRAMS\${APP_NAME}"
 
   SetRegView 64
-  DeleteRegKey HKLM "${APP_REG_KEY}"
+  DeleteRegKey HKCU "${APP_REG_KEY}"
   RMDir /r "$INSTDIR"
 SectionEnd
